@@ -1,13 +1,14 @@
 """
-LangGraph state machine: deterministic outer pipeline, sequential per receipt.
+LangGraph state machine: three per-node ReAct agents + deterministic edges.
+
+See docs/superpowers/specs/2026-04-21-agentic-graph-design.md.
 
 Graph:
-    START -> start -> [loop: process_receipt until all done] -> finalize -> END
+    START -> ingest_node -> (cond) ─┬─▶ END (run-level error)
+                                    └─▶ per_receipt_node ⇄ (cond loop) ⇄ finalize_node -> END
 
-Start emits run_started and loads images. If 0 images, emits ErrorEvent and halts
-(see Task 6.3). Finalize aggregates, generates report, emits final_result.
-R2: finalize prepends fixed run-level assumptions to issues_and_assumptions.
-R4: if all receipts failed at receipt level, emit error instead of final_result.
+Per-node agents are compiled via langchain.agents.create_agent and invoked
+by thin wrappers that project typed RunState in/out.
 """
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -16,25 +17,37 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage
 
 from domain.models import (
-    AllowedCategory, Issue, NormalizedReceipt, RawReceipt, Receipt,
+    AllowedCategory, Anomaly, Issue, NormalizedReceipt, RawReceipt, Receipt, Aggregates,
 )
 from application.events import (
     ErrorEvent, FinalResult, Progress, ReceiptResult, RunStarted,
 )
 from application.ports import (
-    EventBusPort, ImageLoaderPort, ImageRef, LLMPort, OCRPort,
+    ChatModelPort, EventBusPort, ImageLoaderPort, ImageRef, LLMPort, OCRPort,
     ReportRepositoryPort, TracerPort,
 )
 from application.traced_tool import ToolContext
+from application.agent_prompts import (
+    INGEST_SYSTEM_PROMPT, PER_RECEIPT_SYSTEM_PROMPT, FINALIZE_SYSTEM_PROMPT,
+)
 from application.tool_registry import (
+    # legacy coroutine tools used by deterministic node methods (Phases 7.4–7.7 replace these)
     aggregate_receipts, categorize_receipt, extract_receipt_fields,
     generate_report, load_images, normalize_receipt,
+    # agent-facing tool builders
+    build_load_images_tool, build_filter_by_prompt_tool,
+    build_extract_receipt_fields_tool, build_re_extract_with_hint_tool,
+    build_normalize_receipt_tool, build_categorize_receipt_tool,
+    build_skip_receipt_tool, build_aggregate_tool, build_detect_anomalies_tool,
+    build_add_assumption_tool, build_generate_report_tool,
 )
 
 
-# R2: fixed run-level assumptions appended to every run's issues_and_assumptions
+# Fixed run-level assumptions appended to every run's issues_and_assumptions
 _RUN_LEVEL_ASSUMPTIONS: list[tuple[str, str]] = [
     ("only_allowed_extensions", "Only files matching jpg/jpeg/png/webp were considered."),
     ("default_currency_usd", "Totals assume USD when currency is absent."),
@@ -68,6 +81,7 @@ class GraphRunner:
         image_loader: ImageLoaderPort,
         ocr: OCRPort,
         llm: LLMPort,
+        chat_model_port: ChatModelPort,
         report_repo: ReportRepositoryPort,
     ) -> None:
         self.run_id = run_id
@@ -77,6 +91,7 @@ class GraphRunner:
         self.image_loader = image_loader
         self.ocr = ocr
         self.llm = llm
+        self.chat_model_port = chat_model_port
         self.report_repo = report_repo
         self._seq = count(1)
 

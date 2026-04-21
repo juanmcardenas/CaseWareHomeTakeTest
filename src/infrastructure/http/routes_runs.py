@@ -120,6 +120,7 @@ async def post_runs_stream(request: Request,
         run_id=run_id, prompt=prompt,
         bus=bus, tracer=tracer,
         image_loader=image_loader, ocr=ocr, llm=llm,
+        chat_model_port=None,  # populated in Phase 8.2
         report_repo=deps.report_repo,
     )
     graph = build_graph(runner)

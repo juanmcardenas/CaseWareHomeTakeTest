@@ -257,3 +257,18 @@ async def test_detect_anomalies_clean_run_returns_empty():
                 _r(Decimal("25.00"), receipt_date=date(2024, 1, 3))]
     result = await detect_anomalies(_fctx(), aggregates=aggregates, receipts=receipts)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# add_assumption
+# ---------------------------------------------------------------------------
+from application.tool_registry import add_assumption
+
+
+@pytest.mark.asyncio
+async def test_add_assumption_returns_warning_issue():
+    iss = await add_assumption(_fctx(), code="review_currency_mix", message="Multiple currencies detected")
+    assert iss.severity == "warning"
+    assert iss.code == "review_currency_mix"
+    assert iss.message == "Multiple currencies detected"
+    assert iss.receipt_id is None

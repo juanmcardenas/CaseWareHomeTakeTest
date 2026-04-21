@@ -242,6 +242,14 @@ async def detect_anomalies(
     return out
 
 
+# 11. add_assumption — agent narrates a warning into the final report
+@traced_tool("add_assumption", summarize=lambda i: {"code": i.code})
+async def add_assumption(
+    ctx: ToolContext, *, code: str, message: str,
+) -> Issue:
+    return Issue(severity="warning", code=code, message=message)
+
+
 TOOL_NAMES = [
     "load_images",
     "extract_receipt_fields",

@@ -27,3 +27,14 @@ def test_fake_chat_model_adapter_builds_a_chat_model_that_replays_script():
     out2 = built.invoke("anything")
     assert out1.tool_calls[0]["name"] == "foo"
     assert out2.content == "bye"
+
+
+from tests.fakes.fake_chat_model import default_mock_script
+
+
+def test_default_mock_script_is_long_enough_for_typical_mock_run():
+    script = default_mock_script(max_receipts=5)
+    # 2 (ingest) + 4 per receipt × 5 + 4 (finalize) = 26
+    assert len(script) >= 26
+    assert script[0].tool_calls[0]["name"] == "load_images"
+    assert script[-1].tool_calls == []

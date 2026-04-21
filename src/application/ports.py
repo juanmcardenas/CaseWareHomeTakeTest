@@ -25,7 +25,7 @@ class ImageLoaderPort(ABC):
 
 class OCRPort(ABC):
     @abstractmethod
-    async def extract(self, image: ImageRef) -> RawReceipt: ...
+    async def extract(self, image: ImageRef, hint: str | None = None) -> RawReceipt: ...
 
 
 class LLMPort(ABC):

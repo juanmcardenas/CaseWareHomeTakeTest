@@ -6,9 +6,11 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 from uuid import uuid4
+from decimal import Decimal
 
 from application.graph import GraphRunner, RunState
 from application.ports import ImageRef
+from domain.models import RawReceipt, NormalizedReceipt, Categorization, AllowedCategory, Receipt
 from tests.fakes.fake_chat_model import FakeChatModelAdapter, tool_call, finish
 from tests.fakes.mock_image_loader import MockImageLoader
 from tests.fakes.mock_ocr import MockOCR
@@ -79,3 +81,59 @@ async def test_ingest_node_empty_returns_state_with_no_images():
     state = await r.ingest_node(RunState())
     assert state.images == []
     assert state.filtered_out == []
+
+
+@pytest.mark.asyncio
+async def test_per_receipt_node_happy_path_produces_ok_receipt():
+    images = [_img("a.png")]
+    ocr = MockOCR(responses={"a.png": RawReceipt(
+        source_ref="a.png", vendor="Acme", receipt_date="2024-03-01",
+        total_raw="$50.00", ocr_confidence=0.95,
+    )})
+    llm = MockLLM(default_category=AllowedCategory.MEALS)
+    script = [
+        tool_call("extract_receipt_fields", {}),
+        tool_call("normalize_receipt", {}),
+        tool_call("categorize_receipt", {}),
+        finish(),
+    ]
+    r = GraphRunner(
+        run_id=uuid4(), prompt=None,
+        bus=InMemoryEventBus(), tracer=_NullTracer(),
+        image_loader=MockImageLoader(images), ocr=ocr, llm=llm,
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    state = RunState(images=images, current=0)
+    state = await r.per_receipt_node(state)
+    assert state.current == 1
+    assert len(state.receipts) == 1
+    receipt = state.receipts[0]
+    assert receipt.status == "ok"
+    assert receipt.vendor == "Acme"
+    assert receipt.category == AllowedCategory.MEALS
+
+
+@pytest.mark.asyncio
+async def test_per_receipt_node_agent_skip_produces_error_receipt():
+    images = [_img("a.png")]
+    script = [
+        tool_call("skip_receipt", {"reason": "bad_image"}),
+        finish(),
+    ]
+    r = _runner(images=images, script=script)
+    state = RunState(images=images, current=0)
+    state = await r.per_receipt_node(state)
+    assert state.receipts[0].status == "error"
+    assert state.receipts[0].error == "bad_image"
+
+
+@pytest.mark.asyncio
+async def test_per_receipt_node_agent_finishes_early_produces_error_receipt():
+    images = [_img("a.png")]
+    script = [finish()]  # agent gives up without doing anything
+    r = _runner(images=images, script=script)
+    state = RunState(images=images, current=0)
+    state = await r.per_receipt_node(state)
+    assert state.receipts[0].status == "error"
+    assert state.receipts[0].error == "agent_did_not_finish"

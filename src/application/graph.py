@@ -116,6 +116,72 @@ def _capture_filter(tool, images_sink: list, dropped_sink: list):
     )
 
 
+def _capture_raw(tool, holder: dict):
+    """Capture the RawReceipt output of extract_receipt_fields / re_extract_with_hint."""
+    from langchain_core.tools import StructuredTool
+    original_coro = tool.coroutine
+
+    async def _wrapped(*args, **kwargs):
+        result = await original_coro(*args, **kwargs)
+        # result is a dict from _dump(RawReceipt)
+        holder["raw"] = RawReceipt(**result) if isinstance(result, dict) else result
+        return result
+
+    return StructuredTool.from_function(
+        coroutine=_wrapped, name=tool.name, description=tool.description,
+        args_schema=tool.args_schema,
+    )
+
+
+def _capture_normalized(tool, holder: dict):
+    """Capture the NormalizedReceipt output of normalize_receipt."""
+    from langchain_core.tools import StructuredTool
+    original_coro = tool.coroutine
+
+    async def _wrapped(*args, **kwargs):
+        result = await original_coro(*args, **kwargs)
+        holder["normalized"] = NormalizedReceipt(**result) if isinstance(result, dict) else result
+        return result
+
+    return StructuredTool.from_function(
+        coroutine=_wrapped, name=tool.name, description=tool.description,
+        args_schema=tool.args_schema,
+    )
+
+
+def _capture_categorization(tool, holder: dict):
+    """Capture the Categorization output of categorize_receipt."""
+    from langchain_core.tools import StructuredTool
+    from domain.models import Categorization
+    original_coro = tool.coroutine
+
+    async def _wrapped(*args, **kwargs):
+        result = await original_coro(*args, **kwargs)
+        holder["categorization"] = Categorization(**result) if isinstance(result, dict) else result
+        return result
+
+    return StructuredTool.from_function(
+        coroutine=_wrapped, name=tool.name, description=tool.description,
+        args_schema=tool.args_schema,
+    )
+
+
+def _capture_receipt(tool, holder: dict):
+    """Capture the Receipt output of skip_receipt."""
+    from langchain_core.tools import StructuredTool
+    original_coro = tool.coroutine
+
+    async def _wrapped(*args, **kwargs):
+        result = await original_coro(*args, **kwargs)
+        holder["receipt"] = Receipt(**result) if isinstance(result, dict) else result
+        return result
+
+    return StructuredTool.from_function(
+        coroutine=_wrapped, name=tool.name, description=tool.description,
+        args_schema=tool.args_schema,
+    )
+
+
 class RunState(BaseModel):
     images: list[ImageRef] = Field(default_factory=list)
     filtered_out: list[tuple[str, str]] = Field(default_factory=list)
@@ -216,6 +282,148 @@ class GraphRunner:
         return state.model_copy(update={
             "images": list(images_holder),
             "filtered_out": list(dropped_holder),
+        })
+
+    async def per_receipt_node(self, state: RunState) -> RunState:
+        i = state.current
+        n = len(state.images)
+        image = state.images[i]
+        receipt_id = uuid4()
+
+        await self._progress("process_receipt", receipt_id=receipt_id, i=i + 1, n=n)
+
+        raw_holder: dict = {}
+        normalized_holder: dict = {}
+        categorization_holder: dict = {}
+        skip_holder: dict = {}
+
+        extract_tool = _capture_raw(
+            build_extract_receipt_fields_tool(
+                ctx_factory=lambda: self._ctx(receipt_id),
+                ocr=self.ocr, image_provider=lambda: image,
+            ),
+            raw_holder,
+        )
+        reextract_tool = _capture_raw(
+            build_re_extract_with_hint_tool(
+                ctx_factory=lambda: self._ctx(receipt_id),
+                ocr=self.ocr, image_provider=lambda: image,
+            ),
+            raw_holder,
+        )
+        normalize_tool = _capture_normalized(
+            build_normalize_receipt_tool(
+                ctx_factory=lambda: self._ctx(receipt_id),
+                raw_holder=raw_holder,
+            ),
+            normalized_holder,
+        )
+        categorize_tool = _capture_categorization(
+            build_categorize_receipt_tool(
+                ctx_factory=lambda: self._ctx(receipt_id),
+                llm=self.llm, normalized_holder=normalized_holder,
+                user_prompt=self.prompt,
+            ),
+            categorization_holder,
+        )
+        skip_tool = _capture_receipt(
+            build_skip_receipt_tool(
+                ctx_factory=lambda: self._ctx(receipt_id),
+                receipt_id_provider=lambda: receipt_id,
+            ),
+            skip_holder,
+        )
+
+        agent = create_agent(
+            model=self.chat_model_port.build(),
+            tools=[extract_tool, reextract_tool, normalize_tool, categorize_tool, skip_tool],
+            system_prompt=PER_RECEIPT_SYSTEM_PROMPT,
+        )
+
+        human = HumanMessage(content=(
+            f"Process receipt index {i+1}/{n}: source_ref={image.source_ref}, receipt_id={receipt_id}"
+        ))
+
+        agent_error: str | None = None
+        try:
+            await agent.ainvoke({"messages": [human]})
+        except Exception as e:
+            agent_error = f"{type(e).__name__}: {e}"
+
+        # Assemble the Receipt
+        if skip_holder.get("receipt") is not None:
+            receipt = skip_holder["receipt"]
+            # Overwrite the empty source_ref from skip_receipt with the actual image
+            receipt = receipt.model_copy(update={"source_ref": image.source_ref})
+        elif categorization_holder.get("categorization") is not None:
+            raw = raw_holder.get("raw")
+            normalized = normalized_holder.get("normalized")
+            cat = categorization_holder["categorization"]
+            receipt = Receipt(
+                id=receipt_id,
+                source_ref=image.source_ref,
+                vendor=(normalized.vendor if normalized else (raw.vendor if raw else None)),
+                receipt_date=normalized.receipt_date if normalized else None,
+                receipt_number=(normalized.receipt_number if normalized
+                                else (raw.receipt_number if raw else None)),
+                total=normalized.total if normalized else None,
+                currency=normalized.currency if normalized else None,
+                category=cat.category,
+                confidence=cat.confidence,
+                notes=cat.notes,
+                issues=list(cat.issues),
+                raw_ocr=raw.model_dump(mode="json") if raw else None,
+                normalized=normalized.model_dump(mode="json") if normalized else None,
+                status="ok",
+            )
+        else:
+            reason = agent_error or "agent_did_not_finish"
+            receipt = Receipt(
+                id=receipt_id,
+                source_ref=image.source_ref,
+                status="error",
+                error=reason,
+                issues=[Issue(
+                    severity="receipt_error",
+                    code="agent_did_not_finish",
+                    message=reason,
+                    receipt_id=receipt_id,
+                )],
+            )
+
+        # Persist
+        await self.report_repo.insert_receipt({
+            "id": receipt.id, "report_id": self.run_id, "seq": i + 1,
+            "source_ref": receipt.source_ref, "vendor": receipt.vendor,
+            "receipt_date": receipt.receipt_date, "receipt_number": receipt.receipt_number,
+            "total": receipt.total, "currency": receipt.currency,
+            "category": receipt.category.value if receipt.category else None,
+            "confidence": receipt.confidence, "notes": receipt.notes,
+            "issues": [iss.model_dump(mode="json") for iss in receipt.issues],
+            "raw_ocr": receipt.raw_ocr, "normalized": receipt.normalized,
+            "status": receipt.status, "error": receipt.error,
+            "created_at": _now(),
+        })
+        # Emit
+        await self._emit(ReceiptResult(
+            run_id=self.run_id, seq=next(self._seq), ts=_now(),
+            receipt_id=receipt.id, status=receipt.status,
+            vendor=receipt.vendor,
+            receipt_date=receipt.receipt_date.isoformat() if receipt.receipt_date else None,
+            receipt_number=receipt.receipt_number,
+            total=str(receipt.total) if receipt.total is not None else None,
+            currency=receipt.currency,
+            category=receipt.category.value if receipt.category else None,
+            confidence=receipt.confidence,
+            notes=receipt.notes,
+            issues=[iss.model_dump(mode="json") for iss in receipt.issues],
+            error_message=receipt.error,
+        ))
+
+        return state.model_copy(update={
+            "receipts": state.receipts + [receipt],
+            "current": i + 1,
+            "issues": state.issues + list(receipt.issues),
         })
 
     async def start(self, state: RunState) -> RunState:

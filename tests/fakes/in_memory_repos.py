@@ -1,4 +1,5 @@
 from uuid import UUID
+from application.event_bus import InMemoryEventBus  # re-export for agentic tests
 from application.ports import ReportRepositoryPort, TraceRepositoryPort
 
 

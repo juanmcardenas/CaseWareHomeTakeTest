@@ -59,6 +59,63 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _to_image_ref(d) -> "ImageRef":
+    """Coerce a dict or an ImageRef dataclass to an ImageRef."""
+    if isinstance(d, ImageRef):
+        return d
+    return ImageRef(source_ref=d["source_ref"], local_path=d["local_path"])
+
+
+def _capture_list(tool, sink: list, item_cls):
+    """Wrap a StructuredTool so its list result is captured into `sink`."""
+    from langchain_core.tools import StructuredTool
+
+    original_coro = tool.coroutine
+
+    async def _wrapped(*args, **kwargs):
+        result = await original_coro(*args, **kwargs)
+        sink.clear()
+        # result may be list[dict] or list[ImageRef] depending on _dump behaviour
+        if item_cls is ImageRef:
+            for d in result:
+                sink.append(_to_image_ref(d))
+        else:
+            sink.extend(item_cls(**d) for d in result)
+        return result
+
+    return StructuredTool.from_function(
+        coroutine=_wrapped,
+        name=tool.name,
+        description=tool.description,
+        args_schema=tool.args_schema,
+    )
+
+
+def _capture_filter(tool, images_sink: list, dropped_sink: list):
+    """Wrap the filter_by_prompt StructuredTool so kept/dropped lists are captured."""
+    from langchain_core.tools import StructuredTool
+
+    original_coro = tool.coroutine
+
+    async def _wrapped(*args, **kwargs):
+        result = await original_coro(*args, **kwargs)
+        # result is a dict: {"kept": [...ImageRef-like...], "dropped": [...tuples/lists...]}
+        images_sink.clear()
+        for d in result["kept"]:
+            images_sink.append(_to_image_ref(d))
+        dropped_sink.clear()
+        for d in result["dropped"]:
+            dropped_sink.append(tuple(d))
+        return result
+
+    return StructuredTool.from_function(
+        coroutine=_wrapped,
+        name=tool.name,
+        description=tool.description,
+        args_schema=tool.args_schema,
+    )
+
+
 class RunState(BaseModel):
     images: list[ImageRef] = Field(default_factory=list)
     filtered_out: list[tuple[str, str]] = Field(default_factory=list)
@@ -110,6 +167,56 @@ class GraphRunner:
             run_id=self.run_id, seq=next(self._seq), ts=_now(),
             step=step, receipt_id=receipt_id, i=i, n=n,
         ))
+
+    async def ingest_node(self, state: RunState) -> RunState:
+        # Pre-node: emit run_started and a progress marker for ingest
+        await self._emit(RunStarted(
+            run_id=self.run_id, seq=next(self._seq), ts=_now(), prompt=self.prompt,
+        ))
+        await self._progress("ingest_start")
+
+        # Holders for capturing tool outputs
+        images_holder: list[ImageRef] = []
+        dropped_holder: list[tuple[str, str]] = []
+
+        # Construct the two tools
+        load_tool = build_load_images_tool(
+            ctx_factory=lambda: self._ctx(),
+            loader=self.image_loader,
+        )
+        filter_tool = build_filter_by_prompt_tool(
+            ctx_factory=lambda: self._ctx(),
+            images_provider=lambda: list(images_holder),
+            user_prompt=self.prompt,
+        )
+
+        # Wrap so their outputs are captured into the holders
+        wrapped_load = _capture_list(load_tool, images_holder, ImageRef)
+        wrapped_filter = _capture_filter(filter_tool, images_holder, dropped_holder)
+
+        # Build the subgraph agent
+        agent = create_agent(
+            model=self.chat_model_port.build(),
+            tools=[wrapped_load, wrapped_filter],
+            system_prompt=INGEST_SYSTEM_PROMPT,
+        )
+
+        human = HumanMessage(content=self.prompt or "Process all receipts.")
+        try:
+            await agent.ainvoke({"messages": [human]})
+        except Exception as e:
+            await self._emit(ErrorEvent(
+                run_id=self.run_id, seq=next(self._seq), ts=_now(),
+                code="ingest_iterations_exhausted",
+                message=f"ingest_node iteration cap or error: {type(e).__name__}: {e}",
+            ))
+            return state.model_copy(update={"errors": state.errors + ["ingest_iterations_exhausted"]})
+
+        await self._progress("ingest_done", n=len(images_holder))
+        return state.model_copy(update={
+            "images": list(images_holder),
+            "filtered_out": list(dropped_holder),
+        })
 
     async def start(self, state: RunState) -> RunState:
         await self._emit(RunStarted(

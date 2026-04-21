@@ -35,9 +35,21 @@ def finish(content: str = "") -> AIMessage:
     return AIMessage(content=content)
 
 
+class _ToolAwareFakeModel(FakeMessagesListChatModel):
+    """FakeMessagesListChatModel extended with a no-op bind_tools.
+
+    create_agent calls bind_tools on the model at construction time. The fake
+    model raises NotImplementedError by default; this subclass returns self so
+    the scripted AIMessages (which already carry tool_calls) are used as-is.
+    """
+
+    def bind_tools(self, tools, **kwargs):  # type: ignore[override]
+        return self
+
+
 class FakeChatModelAdapter(ChatModelPort):
     def __init__(self, script: Iterable[AIMessage]) -> None:
         self._script = list(script)
 
     def build(self) -> BaseChatModel:
-        return FakeMessagesListChatModel(responses=self._script)
+        return _ToolAwareFakeModel(responses=self._script)

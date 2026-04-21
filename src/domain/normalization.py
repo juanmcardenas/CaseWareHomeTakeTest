@@ -11,6 +11,10 @@ import re
 from domain.models import NormalizedReceipt, RawReceipt
 
 
+_ISO_CURRENCIES: frozenset[str] = frozenset({
+    "USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF",
+    "CNY", "HKD", "SEK", "NOK", "DKK", "NZD", "MXN",
+})
 _DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%d %B %Y", "%B %d, %Y")
 _CURRENCY_SIGN = {"$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY"}
 _CURRENCY_RE = re.compile(r"\b([A-Z]{3})\b")
@@ -42,9 +46,10 @@ def parse_money(raw: str | None) -> tuple[Decimal | None, str | None]:
             text = text.replace(sign, "")
             break
 
-    # currency from ISO-3 suffix or prefix
+    # currency from ISO-3 code (must be in allowlist to avoid matching
+    # arbitrary uppercase trigrams like "TAX" or "VAT")
     m = _CURRENCY_RE.search(text)
-    if m:
+    if m and m.group(1) in _ISO_CURRENCIES:
         currency = currency or m.group(1)
         text = text.replace(m.group(1), "")
 

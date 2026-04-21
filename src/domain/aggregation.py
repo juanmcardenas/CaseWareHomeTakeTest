@@ -2,7 +2,7 @@
 Pure aggregation over a list of Receipt objects.
 
 Excludes: receipts with status='error', missing category, or missing total.
-Rounds totals to 2 decimal places (banker's rounding — Decimal default).
+Rounds totals to 2 decimal places using ROUND_HALF_UP (the common accounting convention).
 """
 from decimal import Decimal, ROUND_HALF_UP
 from domain.models import Aggregates, Receipt

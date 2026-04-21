@@ -57,3 +57,20 @@ def test_aggregate_rounds_to_two_decimals():
     # 20.579 rounds to 20.58
     assert a.total_spend == Decimal("20.58")
     assert a.by_category[AllowedCategory.TRAVEL.value] == Decimal("20.58")
+
+
+def test_aggregate_sum_then_round_vs_per_item_round():
+    """
+    Three items at 0.005 each:
+      per-item rounded (each 0.01) → sum = 0.03
+      sum-then-round (0.015)       → 0.02
+    We sum first, THEN round, so expect 0.02.
+    """
+    receipts = [
+        _receipt(AllowedCategory.TRAVEL, Decimal("0.005")),
+        _receipt(AllowedCategory.TRAVEL, Decimal("0.005")),
+        _receipt(AllowedCategory.TRAVEL, Decimal("0.005")),
+    ]
+    a = aggregate(receipts)
+    assert a.total_spend == Decimal("0.02")  # 0.015 → 0.02 with ROUND_HALF_UP
+    assert a.by_category[AllowedCategory.TRAVEL.value] == Decimal("0.02")

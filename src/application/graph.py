@@ -182,6 +182,26 @@ def _capture_receipt(tool, holder: dict):
     )
 
 
+def _capture_aggregates(tool, holder: dict):
+    """Capture the Aggregates output of the aggregate tool."""
+    from langchain_core.tools import StructuredTool
+    original_coro = tool.coroutine
+
+    async def _wrapped(*args, **kwargs):
+        result = await original_coro(*args, **kwargs)
+        # result is a dict from _dump(Aggregates); Decimal values serialized to strings
+        if isinstance(result, dict):
+            holder["aggregates"] = Aggregates(**result)
+        else:
+            holder["aggregates"] = result
+        return result
+
+    return StructuredTool.from_function(
+        coroutine=_wrapped, name=tool.name, description=tool.description,
+        args_schema=tool.args_schema,
+    )
+
+
 class RunState(BaseModel):
     images: list[ImageRef] = Field(default_factory=list)
     filtered_out: list[tuple[str, str]] = Field(default_factory=list)
@@ -424,6 +444,97 @@ class GraphRunner:
             "receipts": state.receipts + [receipt],
             "current": i + 1,
             "issues": state.issues + list(receipt.issues),
+        })
+
+    async def finalize_node(self, state: RunState) -> RunState:
+        # R4 short-circuit — deterministic, agent NOT invoked
+        if state.receipts and all(r.status != "ok" for r in state.receipts):
+            await self._emit(ErrorEvent(
+                run_id=self.run_id, seq=next(self._seq), ts=_now(),
+                code="all_receipts_failed",
+                message=f"all {len(state.receipts)} receipt(s) failed at receipt level",
+            ))
+            return state
+
+        await self._progress("finalize_start")
+
+        aggregates_holder: dict = {}
+        report_holder: dict = {}
+        assumptions_sink: list[Issue] = []
+
+        aggregate_tool = _capture_aggregates(
+            build_aggregate_tool(
+                ctx_factory=lambda: self._ctx(),
+                receipts_provider=lambda: list(state.receipts),
+            ),
+            aggregates_holder,
+        )
+
+        detect_tool = build_detect_anomalies_tool(
+            ctx_factory=lambda: self._ctx(),
+            aggregates_holder=aggregates_holder,
+            receipts_provider=lambda: list(state.receipts),
+        )
+
+        add_assumption_tool = build_add_assumption_tool(
+            ctx_factory=lambda: self._ctx(),
+            assumptions_sink=assumptions_sink,
+        )
+
+        def _issues_provider() -> list[Issue]:
+            run_level = [
+                Issue(severity="warning", code=code, message=msg)
+                for code, msg in _RUN_LEVEL_ASSUMPTIONS
+            ]
+            return state.issues + run_level + list(assumptions_sink)
+
+        async def _emit_final(report):
+            await self._emit(FinalResult(
+                run_id=self.run_id, seq=next(self._seq), ts=_now(),
+                total_spend=str(report.total_spend),
+                by_category={k: str(v) for k, v in report.by_category.items()},
+                receipts=[r.model_dump(mode="json") for r in report.receipts],
+                issues_and_assumptions=[iss.model_dump(mode="json") for iss in report.issues_and_assumptions],
+            ))
+
+        generate_report_tool = build_generate_report_tool(
+            ctx_factory=lambda: self._ctx(),
+            run_id=self.run_id,
+            aggregates_holder=aggregates_holder,
+            receipts_provider=lambda: list(state.receipts),
+            issues_provider=_issues_provider,
+            report_holder=report_holder,
+            emit_final_result=_emit_final,
+        )
+
+        agent = create_agent(
+            model=self.chat_model_port.build(),
+            tools=[aggregate_tool, detect_tool, add_assumption_tool, generate_report_tool],
+            system_prompt=FINALIZE_SYSTEM_PROMPT,
+        )
+
+        human = HumanMessage(content="Produce the final report.")
+
+        try:
+            await agent.ainvoke({"messages": [human]})
+        except Exception as e:
+            await self._emit(ErrorEvent(
+                run_id=self.run_id, seq=next(self._seq), ts=_now(),
+                code="finalize_iterations_exhausted",
+                message=f"finalize_node failed: {type(e).__name__}: {e}",
+            ))
+            return state
+
+        if report_holder.get("report") is None:
+            await self._emit(ErrorEvent(
+                run_id=self.run_id, seq=next(self._seq), ts=_now(),
+                code="no_final_report",
+                message="finalize agent finished without calling generate_report",
+            ))
+            return state
+
+        return state.model_copy(update={
+            "assumptions_added_by_agent": list(assumptions_sink),
         })
 
     async def start(self, state: RunState) -> RunState:

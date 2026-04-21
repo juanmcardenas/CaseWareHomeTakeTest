@@ -1,6 +1,18 @@
 from uuid import UUID
-from application.event_bus import InMemoryEventBus  # re-export for agentic tests
+from application.event_bus import InMemoryEventBus as _InMemoryEventBus
 from application.ports import ReportRepositoryPort, TraceRepositoryPort
+
+
+class InMemoryEventBus(_InMemoryEventBus):
+    """Test-only subclass that records all published events in `published`."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.published: list[dict] = []
+
+    async def publish(self, event: dict) -> None:
+        self.published.append(event)
+        await super().publish(event)
 
 
 class InMemoryReportRepository(ReportRepositoryPort):

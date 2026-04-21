@@ -137,3 +137,67 @@ async def test_per_receipt_node_agent_finishes_early_produces_error_receipt():
     state = await r.per_receipt_node(state)
     assert state.receipts[0].status == "error"
     assert state.receipts[0].error == "agent_did_not_finish"
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_all_receipts_errored_emits_run_level_error():
+    bus = InMemoryEventBus()
+    r = GraphRunner(
+        run_id=uuid4(), prompt=None,
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader([]), ocr=MockOCR(), llm=MockLLM(),
+        chat_model_port=FakeChatModelAdapter([]),  # agent NOT invoked
+        report_repo=InMemoryReportRepository(),
+    )
+    errored = Receipt(id=uuid4(), source_ref="a.png", status="error", error="x")
+    state = RunState(receipts=[errored])
+    state = await r.finalize_node(state)
+    codes = [e.get("code") for e in bus.published if e.get("event_type") == "error"]
+    assert "all_receipts_failed" in codes
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_happy_path_emits_final_result():
+    images = [_img("a.png")]
+    script = [
+        tool_call("aggregate", {}),
+        tool_call("detect_anomalies", {}),
+        tool_call("generate_report", {}),
+        finish(),
+    ]
+    ok = Receipt(
+        id=uuid4(), source_ref="a.png", status="ok",
+        category=AllowedCategory.MEALS, confidence=0.9, notes="x",
+        total=Decimal("10.00"), currency="USD",
+    )
+    bus = InMemoryEventBus()
+    r = GraphRunner(
+        run_id=uuid4(), prompt=None,
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader(images), ocr=MockOCR(), llm=MockLLM(),
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    state = RunState(receipts=[ok])
+    state = await r.finalize_node(state)
+    event_types = [e.get("event_type") for e in bus.published]
+    assert "final_result" in event_types
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_missing_generate_report_emits_no_final_report_error():
+    ok = Receipt(id=uuid4(), source_ref="a.png", status="ok", total=Decimal("10"), currency="USD",
+                 category=AllowedCategory.OTHER, confidence=0.8, notes="x")
+    bus = InMemoryEventBus()
+    script = [tool_call("aggregate", {}), finish()]  # skips generate_report
+    r = GraphRunner(
+        run_id=uuid4(), prompt=None,
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader([]), ocr=MockOCR(), llm=MockLLM(),
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    state = RunState(receipts=[ok])
+    state = await r.finalize_node(state)
+    codes = [e.get("code") for e in bus.published if e.get("event_type") == "error"]
+    assert "no_final_report" in codes

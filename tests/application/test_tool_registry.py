@@ -272,3 +272,22 @@ async def test_add_assumption_returns_warning_issue():
     assert iss.code == "review_currency_mix"
     assert iss.message == "Multiple currencies detected"
     assert iss.receipt_id is None
+
+
+# ---------------------------------------------------------------------------
+# builder smoke test
+# ---------------------------------------------------------------------------
+from langchain_core.tools import BaseTool
+from application.tool_registry import build_load_images_tool
+
+
+@pytest.mark.asyncio
+async def test_build_load_images_tool_returns_base_tool_usable_by_agent():
+    loader = MockImageLoader([_img("a.png"), _img("b.png")])
+    ctx_factory = lambda: _fctx()
+    tool = build_load_images_tool(ctx_factory=ctx_factory, loader=loader)
+    assert isinstance(tool, BaseTool)
+    assert tool.name == "load_images"
+    result = await tool.ainvoke({})
+    assert isinstance(result, list)
+    assert len(result) == 2

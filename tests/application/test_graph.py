@@ -110,3 +110,29 @@ async def test_receipt_level_error_continues_run():
     assert final["total_spend"] == "24.68"
     codes = [i["code"] for i in final["issues_and_assumptions"]]
     assert "ocr_failed" in codes
+
+
+@pytest.mark.asyncio
+async def test_zero_images_emits_error_event():
+    runner, events = _runner_with_mocks([])  # no images
+    app = build_graph(runner)
+    await app.ainvoke(RunState(receipts=[], current=0, errors=[], issues=[]))
+
+    kinds = [e["event_type"] for e in events]
+    assert "error" in kinds
+    err = next(e for e in events if e["event_type"] == "error")
+    assert err["code"] == "no_images"
+    assert "final_result" not in kinds
+
+
+@pytest.mark.asyncio
+async def test_all_receipts_failed_emits_run_error():
+    refs = _refs(2)
+    ocr = MockOCR(fail_on={"r1.png", "r2.png"})
+    runner, events = _runner_with_mocks(refs, ocr=ocr)
+    await build_graph(runner).ainvoke(RunState(receipts=[], current=0, errors=[], issues=[]))
+    kinds = [e["event_type"] for e in events]
+    assert "error" in kinds
+    err = next(e for e in events if e["event_type"] == "error")
+    assert err["code"] == "all_receipts_failed"
+    assert "final_result" not in kinds

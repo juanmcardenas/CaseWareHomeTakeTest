@@ -1,3 +1,5 @@
+from datetime import date
+from decimal import Decimal
 from enum import Enum
 from typing import Literal
 from uuid import UUID
@@ -36,3 +38,57 @@ class Categorization(BaseModel):
         if self.category == AllowedCategory.OTHER and not (self.notes and self.notes.strip()):
             raise ValueError("category 'Other' requires a non-empty note")
         return self
+
+
+class RawReceipt(BaseModel):
+    """OCR output pre-normalization. All fields optional (OCR may fail)."""
+    source_ref: str
+    vendor: str | None = None
+    receipt_date: str | None = None      # raw string
+    receipt_number: str | None = None
+    total_raw: str | None = None         # raw string ("$1,234.56")
+    currency_raw: str | None = None
+    line_items: list[dict] = Field(default_factory=list)
+    ocr_confidence: float | None = None
+
+
+class NormalizedReceipt(BaseModel):
+    """Normalized receipt fields. Types are strict (date, Decimal)."""
+    source_ref: str
+    vendor: str | None = None
+    receipt_date: date | None = None
+    receipt_number: str | None = None
+    total: Decimal | None = None
+    currency: str | None = None          # ISO 4217; defaults to "USD" when absent
+
+
+class Receipt(BaseModel):
+    """Full per-receipt record — what gets persisted and streamed on receipt_result."""
+    id: UUID
+    source_ref: str
+    vendor: str | None = None
+    receipt_date: date | None = None
+    receipt_number: str | None = None
+    total: Decimal | None = None
+    currency: str | None = None
+    category: AllowedCategory | None = None
+    confidence: float | None = None
+    notes: str | None = None
+    issues: list[Issue] = Field(default_factory=list)
+    raw_ocr: dict | None = None
+    normalized: dict | None = None
+    status: Literal["ok", "error"] = "ok"
+    error: str | None = None
+
+
+class Aggregates(BaseModel):
+    total_spend: Decimal
+    by_category: dict[str, Decimal]
+
+
+class Report(BaseModel):
+    run_id: UUID
+    total_spend: Decimal
+    by_category: dict[str, Decimal]
+    receipts: list[Receipt]
+    issues_and_assumptions: list[Issue]

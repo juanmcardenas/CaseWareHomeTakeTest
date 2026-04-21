@@ -1,6 +1,17 @@
 import pytest
+from datetime import date as date_type
+from decimal import Decimal
 from uuid import uuid4
-from domain.models import AllowedCategory, Issue, Categorization
+from domain.models import (
+    AllowedCategory,
+    Issue,
+    Categorization,
+    RawReceipt,
+    NormalizedReceipt,
+    Receipt,
+    Aggregates,
+    Report,
+)
 
 
 def test_allowed_category_values():
@@ -45,3 +56,48 @@ def test_categorization_other_requires_notes():
     # With notes: OK
     c = Categorization(category=AllowedCategory.OTHER, confidence=0.7, notes="donation")
     assert c.notes == "donation"
+
+
+def test_raw_receipt_accepts_optional_fields():
+    r = RawReceipt(source_ref="receipt_001.png")
+    assert r.line_items == []
+
+
+def test_normalized_receipt_types():
+    n = NormalizedReceipt(
+        source_ref="receipt_001.png",
+        vendor="Uber",
+        receipt_date=date_type(2024, 3, 15),
+        receipt_number="R-12345",
+        total=Decimal("45.67"),
+        currency="USD",
+    )
+    assert isinstance(n.total, Decimal)
+
+
+def test_receipt_default_status_ok():
+    r = Receipt(id=uuid4(), source_ref="a.png")
+    assert r.status == "ok"
+    assert r.issues == []
+
+
+def test_receipt_error_status_carries_error_field():
+    r = Receipt(id=uuid4(), source_ref="a.png", status="error", error="OCR timeout")
+    assert r.error == "OCR timeout"
+
+
+def test_aggregates_shape():
+    a = Aggregates(total_spend=Decimal("100.00"), by_category={"Travel": Decimal("45.67")})
+    assert a.by_category["Travel"] == Decimal("45.67")
+
+
+def test_report_bundles_fields():
+    run_id = uuid4()
+    rep = Report(
+        run_id=run_id,
+        total_spend=Decimal("0.00"),
+        by_category={},
+        receipts=[],
+        issues_and_assumptions=[],
+    )
+    assert rep.run_id == run_id

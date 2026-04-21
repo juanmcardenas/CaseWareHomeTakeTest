@@ -9,6 +9,7 @@ Network-sensitive tools (extract_receipt_fields, categorize_receipt) retry
 once on network-class exceptions per plan revision R1.
 """
 from uuid import UUID
+from pydantic import BaseModel
 from domain.aggregation import aggregate as _aggregate_pure
 from domain.models import (
     Aggregates, AllowedCategory, Categorization, Issue, NormalizedReceipt,
@@ -116,6 +117,54 @@ async def generate_report(
         receipts=receipts,
         issues_and_assumptions=issues,
     )
+
+
+# 7. filter_by_prompt — pure-Python keyword heuristic
+_PROMPT_KEYWORD_MAP: dict[str, list[str]] = {
+    "food": ["restaurant", "cafe", "lunch", "dinner", "meal", "food", "coffee"],
+    "travel": ["uber", "lyft", "taxi", "flight", "hotel", "airbnb", "train"],
+    "office": ["office", "supplies", "staples", "paper"],
+    "software": ["subscription", "saas", "stripe", "github", "aws"],
+}
+
+
+class FilterResult(BaseModel):
+    kept: list[ImageRef]
+    dropped: list[tuple[str, str]]
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+def _matched_keywords(prompt: str) -> list[str]:
+    prompt_lower = prompt.lower()
+    matched: list[str] = []
+    for trigger, keywords in _PROMPT_KEYWORD_MAP.items():
+        if trigger in prompt_lower:
+            matched.extend(keywords)
+    return matched
+
+
+@traced_tool(
+    "filter_by_prompt",
+    summarize=lambda r: {"kept": len(r.kept), "dropped": len(r.dropped)},
+)
+async def filter_by_prompt(
+    ctx: ToolContext, *, images: list[ImageRef], user_prompt: str | None,
+) -> FilterResult:
+    if not user_prompt:
+        return FilterResult(kept=list(images), dropped=[])
+    keywords = _matched_keywords(user_prompt)
+    if not keywords:
+        return FilterResult(kept=list(images), dropped=[])
+    kept: list[ImageRef] = []
+    dropped: list[tuple[str, str]] = []
+    for img in images:
+        name = img.source_ref.lower()
+        if any(kw in name for kw in keywords):
+            kept.append(img)
+        else:
+            dropped.append((img.source_ref, f"no keyword from prompt ({', '.join(keywords)}) in filename"))
+    return FilterResult(kept=kept, dropped=dropped)
 
 
 TOOL_NAMES = [

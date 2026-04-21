@@ -2,6 +2,7 @@ import pytest
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
+from itertools import count
 from domain.models import (
     AllowedCategory, Categorization, Issue, NormalizedReceipt, RawReceipt, Receipt,
 )
@@ -15,6 +16,7 @@ from application.tool_registry import (
 from tests.fakes.mock_ocr import MockOCR
 from tests.fakes.mock_llm import MockLLM
 from tests.fakes.mock_image_loader import MockImageLoader
+from infrastructure.tracing.json_logs_adapter import JSONLogsTracer
 
 
 class _NullTracer:
@@ -27,6 +29,20 @@ class _NullTracer:
 def _ctx(bus):
     return ToolContext(run_id=uuid4(), bus=bus, tracer=_NullTracer(),
                        seq_counter=iter(range(1, 1000)))
+
+
+def _fctx():
+    return ToolContext(
+        run_id=uuid4(),
+        bus=InMemoryEventBus(),
+        tracer=_NullTracer(),
+        seq_counter=count(1),
+        receipt_id=None,
+    )
+
+
+def _img(name: str) -> ImageRef:
+    return ImageRef(source_ref=name, local_path=Path(f"/tmp/{name}"))
 
 
 @pytest.mark.asyncio
@@ -96,3 +112,36 @@ async def test_generate_report_bundles_fields():
                                 receipts=receipts, issues=[])
     assert rep.run_id == rid
     assert rep.total_spend == Decimal("0.00")
+
+
+# ---------------------------------------------------------------------------
+# filter_by_prompt tests
+# ---------------------------------------------------------------------------
+from application.tool_registry import filter_by_prompt, FilterResult
+
+
+@pytest.mark.asyncio
+async def test_filter_by_prompt_no_prompt_keeps_all():
+    imgs = [_img("a.png"), _img("b.png")]
+    r = await filter_by_prompt(_fctx(), images=imgs, user_prompt=None)
+    assert r.kept == imgs
+    assert r.dropped == []
+
+
+@pytest.mark.asyncio
+async def test_filter_by_prompt_unknown_keyword_keeps_all():
+    imgs = [_img("a.png"), _img("b.png")]
+    r = await filter_by_prompt(_fctx(), images=imgs, user_prompt="arbitrary freeform text")
+    assert r.kept == imgs
+    assert r.dropped == []
+
+
+@pytest.mark.asyncio
+async def test_filter_by_prompt_food_keyword_matches_restaurant_filename():
+    imgs = [_img("restaurant_001.png"), _img("uber_receipt.png"), _img("cafe_drink.png")]
+    r = await filter_by_prompt(_fctx(), images=imgs, user_prompt="only food")
+    kept_names = {i.source_ref for i in r.kept}
+    assert kept_names == {"restaurant_001.png", "cafe_drink.png"}
+    assert len(r.dropped) == 1
+    assert r.dropped[0][0] == "uber_receipt.png"
+    assert "food" in r.dropped[0][1].lower() or "keyword" in r.dropped[0][1].lower()

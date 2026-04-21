@@ -30,13 +30,16 @@ class OpenAIOCRAdapter(OCRPort):
         self._model = model
         self._timeout_s = timeout_s
 
-    async def extract(self, image: ImageRef) -> RawReceipt:
+    async def extract(self, image: ImageRef, hint: str | None = None) -> RawReceipt:
+        system_text = _SYSTEM
+        if hint:
+            system_text = f"{system_text}\n\nAdditional hint: {hint}"
         data_url = _image_to_data_url(image.local_path)
         resp = await asyncio.wait_for(
             self._client.chat.completions.create(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": _SYSTEM},
+                    {"role": "system", "content": system_text},
                     {"role": "user", "content": [
                         {"type": "text", "text": "Extract the receipt."},
                         {"type": "image_url", "image_url": {"url": data_url}},

@@ -8,11 +8,12 @@ wrappers bypasses the trace — don't do that.
 Network-sensitive tools (extract_receipt_fields, categorize_receipt) retry
 once on network-class exceptions per plan revision R1.
 """
+from decimal import Decimal
 from uuid import UUID
 from pydantic import BaseModel
 from domain.aggregation import aggregate as _aggregate_pure
 from domain.models import (
-    Aggregates, AllowedCategory, Categorization, Issue, NormalizedReceipt,
+    Aggregates, AllowedCategory, Anomaly, Categorization, Issue, NormalizedReceipt,
     RawReceipt, Receipt, Report,
 )
 from domain.normalization import normalize as _normalize_pure
@@ -196,6 +197,49 @@ async def skip_receipt(
             receipt_id=receipt_id,
         )],
     )
+
+
+# 10. detect_anomalies — pure rules over aggregates + receipts
+def _summarize_anomalies(result: list[Anomaly]) -> dict:
+    return {"count": len(result), "codes": [a.code for a in result]}
+
+
+@traced_tool("detect_anomalies", summarize=_summarize_anomalies)
+async def detect_anomalies(
+    ctx: ToolContext, *, aggregates: Aggregates, receipts: list[Receipt],
+) -> list[Anomaly]:
+    out: list[Anomaly] = []
+    ok_receipts = [r for r in receipts if r.status == "ok" and r.total is not None]
+    total = aggregates.total_spend
+
+    # Rule 1: single receipt >= 80% of spend
+    if ok_receipts and total > 0:
+        for r in ok_receipts:
+            if (r.total / total) >= Decimal("0.80"):
+                out.append(Anomaly(
+                    code="single_receipt_dominant",
+                    message=f"Receipt {r.source_ref or r.id} is {(r.total / total * 100):.0f}% of total spend",
+                ))
+                break
+
+    # Rule 2: currency mix
+    currencies = {r.currency for r in ok_receipts if r.currency}
+    if len(currencies) > 1:
+        out.append(Anomaly(
+            code="currency_mix",
+            message=f"Receipts contain multiple currencies: {sorted(currencies)}",
+        ))
+
+    # Rule 3: >= 50% of ok receipts missing dates
+    if ok_receipts:
+        missing = sum(1 for r in ok_receipts if r.receipt_date is None)
+        if missing / len(ok_receipts) >= 0.5:
+            out.append(Anomaly(
+                code="many_missing_dates",
+                message=f"{missing} of {len(ok_receipts)} receipts are missing a date",
+            ))
+
+    return out
 
 
 TOOL_NAMES = [

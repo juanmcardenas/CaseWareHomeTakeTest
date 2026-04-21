@@ -193,3 +193,67 @@ async def test_skip_receipt_returns_error_receipt_with_issue():
     assert r.issues[0].code == "agent_skipped"
     assert r.issues[0].message == "ocr_twice_failed"
     assert r.issues[0].receipt_id == rid
+
+
+# ---------------------------------------------------------------------------
+# detect_anomalies tests
+# ---------------------------------------------------------------------------
+from domain.models import Aggregates, Anomaly
+from application.tool_registry import detect_anomalies
+
+
+def _r(total: Decimal, currency: str = "USD", receipt_date=None, status: str = "ok") -> Receipt:
+    return Receipt(
+        id=uuid4(),
+        source_ref="x",
+        total=total,
+        currency=currency,
+        receipt_date=receipt_date,
+        category=AllowedCategory.OTHER,
+        confidence=0.9,
+        notes="x",
+        status=status,
+    )
+
+
+@pytest.mark.asyncio
+async def test_detect_anomalies_single_receipt_dominant():
+    from datetime import date
+    aggregates = Aggregates(total_spend=Decimal("100.00"), by_category={"Other": Decimal("100.00")})
+    receipts = [_r(Decimal("85.00"), receipt_date=date(2024, 1, 1)),
+                _r(Decimal("15.00"), receipt_date=date(2024, 1, 2))]
+    result = await detect_anomalies(_fctx(), aggregates=aggregates, receipts=receipts)
+    codes = {a.code for a in result}
+    assert "single_receipt_dominant" in codes
+
+
+@pytest.mark.asyncio
+async def test_detect_anomalies_currency_mix():
+    from datetime import date
+    aggregates = Aggregates(total_spend=Decimal("20.00"), by_category={"Other": Decimal("20.00")})
+    receipts = [_r(Decimal("10.00"), currency="USD", receipt_date=date(2024, 1, 1)),
+                _r(Decimal("10.00"), currency="EUR", receipt_date=date(2024, 1, 2))]
+    result = await detect_anomalies(_fctx(), aggregates=aggregates, receipts=receipts)
+    codes = {a.code for a in result}
+    assert "currency_mix" in codes
+
+
+@pytest.mark.asyncio
+async def test_detect_anomalies_many_missing_dates():
+    aggregates = Aggregates(total_spend=Decimal("20.00"), by_category={"Other": Decimal("20.00")})
+    receipts = [_r(Decimal("10.00"), receipt_date=None),
+                _r(Decimal("10.00"), receipt_date=None)]
+    result = await detect_anomalies(_fctx(), aggregates=aggregates, receipts=receipts)
+    codes = {a.code for a in result}
+    assert "many_missing_dates" in codes
+
+
+@pytest.mark.asyncio
+async def test_detect_anomalies_clean_run_returns_empty():
+    from datetime import date
+    aggregates = Aggregates(total_spend=Decimal("100.00"), by_category={"Other": Decimal("100.00")})
+    receipts = [_r(Decimal("40.00"), receipt_date=date(2024, 1, 1)),
+                _r(Decimal("35.00"), receipt_date=date(2024, 1, 2)),
+                _r(Decimal("25.00"), receipt_date=date(2024, 1, 3))]
+    result = await detect_anomalies(_fctx(), aggregates=aggregates, receipts=receipts)
+    assert result == []

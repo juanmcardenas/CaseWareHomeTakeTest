@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from application.event_bus import InMemoryEventBus
 from application.graph import GraphRunner, RunState, build_graph
-from application.ports import ReportRepositoryPort, TraceRepositoryPort
+from application.ports import ChatModelPort, ReportRepositoryPort, TraceRepositoryPort
 from config import LLMMode, Settings
 from infrastructure.http.sse import sse_response
 from infrastructure.images.folder_loader import LocalFolderImageLoader
@@ -29,6 +29,7 @@ class RunsDeps:
     settings: Settings
     report_repo: ReportRepositoryPort
     trace_repo: TraceRepositoryPort
+    chat_model_port: ChatModelPort
 
 
 class FolderInput(BaseModel):
@@ -120,7 +121,7 @@ async def post_runs_stream(request: Request,
         run_id=run_id, prompt=prompt,
         bus=bus, tracer=tracer,
         image_loader=image_loader, ocr=ocr, llm=llm,
-        chat_model_port=None,  # populated in Phase 8.2
+        chat_model_port=deps.chat_model_port,
         report_repo=deps.report_repo,
     )
     graph = build_graph(runner)

@@ -1,0 +1,73 @@
+"""
+Pure normalization functions.
+
+parse_date / parse_money tolerate None and raise ValueError on unparseable non-empty input.
+`normalize(raw)` always returns a NormalizedReceipt; on parse failure it raises so the
+tool wrapper can classify the error at the boundary.
+"""
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+import re
+from domain.models import NormalizedReceipt, RawReceipt
+
+
+_DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%d %B %Y", "%B %d, %Y")
+_CURRENCY_SIGN = {"$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY"}
+_CURRENCY_RE = re.compile(r"\b([A-Z]{3})\b")
+_MONEY_RE = re.compile(r"[-+]?\d[\d,]*\.?\d*")
+
+
+def parse_date(raw: str | None) -> date | None:
+    if raw is None or not raw.strip():
+        return None
+    text = raw.strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"unparseable date: {raw!r}")
+
+
+def parse_money(raw: str | None) -> tuple[Decimal | None, str | None]:
+    if raw is None or not raw.strip():
+        return None, None
+    text = raw.strip()
+
+    # currency from sign
+    currency: str | None = None
+    for sign, iso in _CURRENCY_SIGN.items():
+        if sign in text:
+            currency = iso
+            text = text.replace(sign, "")
+            break
+
+    # currency from ISO-3 suffix or prefix
+    m = _CURRENCY_RE.search(text)
+    if m:
+        currency = currency or m.group(1)
+        text = text.replace(m.group(1), "")
+
+    # number
+    nm = _MONEY_RE.search(text.replace(",", ""))
+    if not nm:
+        raise ValueError(f"unparseable money: {raw!r}")
+    try:
+        amount = Decimal(nm.group(0))
+    except InvalidOperation as e:
+        raise ValueError(f"unparseable money: {raw!r}") from e
+    return amount, currency
+
+
+def normalize(raw: RawReceipt) -> NormalizedReceipt:
+    d = parse_date(raw.receipt_date)
+    amount, currency_from_total = parse_money(raw.total_raw)
+    currency = raw.currency_raw or currency_from_total or "USD"
+    return NormalizedReceipt(
+        source_ref=raw.source_ref,
+        vendor=raw.vendor,
+        receipt_date=d,
+        receipt_number=raw.receipt_number,
+        total=amount,
+        currency=currency,
+    )

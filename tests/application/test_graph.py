@@ -90,3 +90,23 @@ async def test_final_result_includes_run_level_assumptions():
     assert "only_allowed_extensions" in codes
     assert "default_currency_usd" in codes
     assert "errored_receipts_excluded" in codes
+
+
+@pytest.mark.asyncio
+async def test_receipt_level_error_continues_run():
+    refs = _refs(3)
+    ocr = MockOCR(fail_on={"r2.png"})
+    runner, events = _runner_with_mocks(refs, ocr=ocr)
+    app = build_graph(runner)
+    await app.ainvoke(RunState(receipts=[], current=0, errors=[], issues=[]))
+
+    receipt_results = [e for e in events if e["event_type"] == "receipt_result"]
+    assert len(receipt_results) == 3
+    statuses = [e["status"] for e in receipt_results]
+    assert statuses.count("error") == 1
+    assert statuses.count("ok") == 2
+
+    final = [e for e in events if e["event_type"] == "final_result"][0]
+    assert final["total_spend"] == "24.68"
+    codes = [i["code"] for i in final["issues_and_assumptions"]]
+    assert "ocr_failed" in codes

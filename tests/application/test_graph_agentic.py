@@ -201,3 +201,86 @@ async def test_finalize_node_missing_generate_report_emits_no_final_report_error
     state = await r.finalize_node(state)
     codes = [e.get("code") for e in bus.published if e.get("event_type") == "error"]
     assert "no_final_report" in codes
+
+
+@pytest.mark.asyncio
+async def test_full_graph_happy_path_two_receipts():
+    images = [_img("a.png"), _img("b.png")]
+    ocr = MockOCR(responses={
+        "a.png": RawReceipt(source_ref="a.png", vendor="Acme", receipt_date="2024-03-01",
+                            total_raw="$50.00", ocr_confidence=0.95),
+        "b.png": RawReceipt(source_ref="b.png", vendor="Bravo", receipt_date="2024-03-02",
+                            total_raw="$30.00", ocr_confidence=0.95),
+    })
+    llm = MockLLM(default_category=AllowedCategory.MEALS)
+
+    # Script: ingest (load_images+finish) + 2×per_receipt (extract+normalize+categorize+finish) + finalize (aggregate+detect+generate_report+finish)
+    script = [
+        tool_call("load_images", {}), finish(),
+        tool_call("extract_receipt_fields", {}),
+        tool_call("normalize_receipt", {}),
+        tool_call("categorize_receipt", {}),
+        finish(),
+        tool_call("extract_receipt_fields", {}),
+        tool_call("normalize_receipt", {}),
+        tool_call("categorize_receipt", {}),
+        finish(),
+        tool_call("aggregate", {}),
+        tool_call("detect_anomalies", {}),
+        tool_call("generate_report", {}),
+        finish(),
+    ]
+    bus = InMemoryEventBus()
+    r = GraphRunner(
+        run_id=uuid4(), prompt=None,
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader(images), ocr=ocr, llm=llm,
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    from application.graph import build_graph
+    graph = build_graph(r)
+    await graph.ainvoke(RunState())
+    event_types = [e.get("event_type") for e in bus.published]
+    assert event_types[0] == "run_started"
+    assert event_types[-1] == "final_result"
+    assert event_types.count("receipt_result") == 2
+
+
+@pytest.mark.asyncio
+async def test_full_graph_zero_images_emits_no_images():
+    script = [tool_call("load_images", {}), finish()]
+    bus = InMemoryEventBus()
+    r = GraphRunner(
+        run_id=uuid4(), prompt=None,
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader([]), ocr=MockOCR(), llm=MockLLM(),
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    from application.graph import build_graph
+    graph = build_graph(r)
+    await graph.ainvoke(RunState())
+    codes = [e.get("code") for e in bus.published if e.get("event_type") == "error"]
+    assert "no_images" in codes
+
+
+@pytest.mark.asyncio
+async def test_full_graph_all_images_filtered_out_emits_filter_error():
+    images = [_img("uber.png")]
+    script = [
+        tool_call("load_images", {}), tool_call("filter_by_prompt", {}), finish(),
+    ]
+    bus = InMemoryEventBus()
+    r = GraphRunner(
+        run_id=uuid4(), prompt="only food",
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader(images), ocr=MockOCR(), llm=MockLLM(),
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    from application.graph import build_graph
+    graph = build_graph(r)
+    await graph.ainvoke(RunState())
+    codes = [e.get("code") for e in bus.published if e.get("event_type") == "error"]
+    assert "all_images_filtered_out" in codes

@@ -49,7 +49,9 @@ class _ToolAwareFakeModel(FakeMessagesListChatModel):
 
 class FakeChatModelAdapter(ChatModelPort):
     def __init__(self, script: Iterable[AIMessage]) -> None:
-        self._script = list(script)
+        self._model = _ToolAwareFakeModel(responses=list(script))
 
     def build(self) -> BaseChatModel:
-        return _ToolAwareFakeModel(responses=self._script)
+        # Always return the same model instance so the script position is
+        # preserved across multiple node invocations within one run.
+        return self._model

@@ -257,4 +257,9 @@ TOOL_NAMES = [
     "categorize_receipt",
     "aggregate",
     "generate_report",
+    "filter_by_prompt",
+    "re_extract_with_hint",
+    "skip_receipt",
+    "detect_anomalies",
+    "add_assumption",
 ]

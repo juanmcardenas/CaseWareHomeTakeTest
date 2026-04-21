@@ -13,3 +13,16 @@ def test_chat_model_port_requires_build():
         pass
     with pytest.raises(TypeError):
         Incomplete()  # type: ignore[abstract]
+
+
+def test_deepseek_chat_model_adapter_builds():
+    from infrastructure.llm.deepseek_chat_model import DeepSeekChatModelAdapter
+    from langchain_core.language_models import BaseChatModel
+    adapter = DeepSeekChatModelAdapter(
+        api_key="dummy",
+        base_url="https://api.deepseek.com",
+        model="deepseek-chat",
+        timeout_s=20,
+    )
+    built = adapter.build()
+    assert isinstance(built, BaseChatModel)

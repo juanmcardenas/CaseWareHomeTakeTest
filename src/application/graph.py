@@ -48,10 +48,12 @@ def _now() -> datetime:
 
 class RunState(BaseModel):
     images: list[ImageRef] = Field(default_factory=list)
+    filtered_out: list[tuple[str, str]] = Field(default_factory=list)
     receipts: list[Receipt] = Field(default_factory=list)
     current: int = 0
     errors: list[str] = Field(default_factory=list)
     issues: list[Issue] = Field(default_factory=list)
+    assumptions_added_by_agent: list[Issue] = Field(default_factory=list)
 
     model_config = {"arbitrary_types_allowed": True}
 

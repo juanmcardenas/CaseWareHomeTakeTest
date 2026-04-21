@@ -175,6 +175,29 @@ async def re_extract_with_hint(
     return await ocr.extract(image, hint=hint)
 
 
+# 9. skip_receipt — agent-driven skip
+def _summarize_skip(r: Receipt) -> dict:
+    return {"id": str(r.id), "reason": r.error}
+
+
+@traced_tool("skip_receipt", summarize=_summarize_skip)
+async def skip_receipt(
+    ctx: ToolContext, *, receipt_id: UUID, reason: str,
+) -> Receipt:
+    return Receipt(
+        id=receipt_id,
+        source_ref="",
+        status="error",
+        error=reason,
+        issues=[Issue(
+            severity="receipt_error",
+            code="agent_skipped",
+            message=reason,
+            receipt_id=receipt_id,
+        )],
+    )
+
+
 TOOL_NAMES = [
     "load_images",
     "extract_receipt_fields",

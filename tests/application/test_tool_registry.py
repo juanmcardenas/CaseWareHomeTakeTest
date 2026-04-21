@@ -173,3 +173,23 @@ async def test_re_extract_with_hint_calls_ocr_with_hint():
     assert ocr.last_hint == "focus on total"
     assert ocr.call_count == 1
     assert r.vendor == "X"
+
+
+# ---------------------------------------------------------------------------
+# skip_receipt tests
+# ---------------------------------------------------------------------------
+from application.tool_registry import skip_receipt
+
+
+@pytest.mark.asyncio
+async def test_skip_receipt_returns_error_receipt_with_issue():
+    rid = uuid4()
+    r = await skip_receipt(_fctx(), receipt_id=rid, reason="ocr_twice_failed")
+    assert r.id == rid
+    assert r.status == "error"
+    assert r.error == "ocr_twice_failed"
+    assert len(r.issues) == 1
+    assert r.issues[0].severity == "receipt_error"
+    assert r.issues[0].code == "agent_skipped"
+    assert r.issues[0].message == "ocr_twice_failed"
+    assert r.issues[0].receipt_id == rid

@@ -1,0 +1,178 @@
+[
+  {
+    "event": "run_started",
+    "data": {
+      "event_type": "run_started",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 1,
+      "ts": "2026-04-21T10:00:00.000Z",
+      "prompt": "be conservative"
+    }
+  },
+  {
+    "event": "progress",
+    "data": {
+      "event_type": "progress",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 2,
+      "ts": "2026-04-21T10:00:00.010Z",
+      "step": "load_images"
+    }
+  },
+  {
+    "event": "tool_call",
+    "data": {
+      "event_type": "tool_call",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 3,
+      "ts": "2026-04-21T10:00:00.020Z",
+      "tool": "load_images",
+      "attempt": 1,
+      "args": {}
+    }
+  },
+  {
+    "event": "tool_result",
+    "data": {
+      "event_type": "tool_result",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 4,
+      "ts": "2026-04-21T10:00:00.030Z",
+      "tool": "load_images",
+      "result_summary": {"count": 2},
+      "error": false,
+      "duration_ms": 8
+    }
+  },
+  {
+    "event": "progress",
+    "data": {
+      "event_type": "progress",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 5,
+      "ts": "2026-04-21T10:00:00.040Z",
+      "step": "ocr",
+      "receipt_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "i": 1,
+      "n": 2
+    }
+  },
+  {
+    "event": "tool_call",
+    "data": {
+      "event_type": "tool_call",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 6,
+      "ts": "2026-04-21T10:00:00.050Z",
+      "tool": "extract_receipt_fields",
+      "receipt_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "attempt": 1,
+      "args": {"image": "receipt_001.png"}
+    }
+  },
+  {
+    "event": "tool_result",
+    "data": {
+      "event_type": "tool_result",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 7,
+      "ts": "2026-04-21T10:00:00.120Z",
+      "tool": "extract_receipt_fields",
+      "receipt_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "result_summary": {"vendor": "Uber", "has_total": true, "ocr_confidence": 0.92},
+      "error": false,
+      "duration_ms": 70
+    }
+  },
+  {
+    "event": "tool_call",
+    "data": {
+      "event_type": "tool_call",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 8,
+      "ts": "2026-04-21T10:00:00.130Z",
+      "tool": "normalize_receipt",
+      "receipt_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "attempt": 1,
+      "args": {}
+    }
+  },
+  {
+    "event": "tool_result",
+    "data": {
+      "event_type": "tool_result",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 9,
+      "ts": "2026-04-21T10:00:00.140Z",
+      "tool": "normalize_receipt",
+      "receipt_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "result_summary": {"vendor": "Uber", "receipt_date": "2024-03-15", "total": "45.67", "currency": "USD"},
+      "error": false,
+      "duration_ms": 2
+    }
+  },
+  {
+    "event": "tool_call",
+    "data": {
+      "event_type": "tool_call",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 10,
+      "ts": "2026-04-21T10:00:00.150Z",
+      "tool": "categorize_receipt",
+      "receipt_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "attempt": 1,
+      "args": {"user_prompt": "be conservative"}
+    }
+  },
+  {
+    "event": "tool_result",
+    "data": {
+      "event_type": "tool_result",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 11,
+      "ts": "2026-04-21T10:00:00.620Z",
+      "tool": "categorize_receipt",
+      "receipt_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "result_summary": {"category": "Travel", "confidence": 0.92, "issue_count": 0},
+      "error": false,
+      "duration_ms": 470
+    }
+  },
+  {
+    "event": "receipt_result",
+    "data": {
+      "event_type": "receipt_result",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 12,
+      "ts": "2026-04-21T10:00:00.630Z",
+      "receipt_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "status": "ok",
+      "vendor": "Uber",
+      "receipt_date": "2024-03-15",
+      "receipt_number": "R-12345",
+      "total": "45.67",
+      "currency": "USD",
+      "category": "Travel",
+      "confidence": 0.92,
+      "notes": "rideshare",
+      "issues": []
+    }
+  },
+  {
+    "event": "final_result",
+    "data": {
+      "event_type": "final_result",
+      "run_id": "3f6a8d2e-1b7c-4f9a-b2d3-0e5a8c9f1234",
+      "seq": 100,
+      "ts": "2026-04-21T10:00:02.000Z",
+      "total_spend": "45.67",
+      "by_category": {"Travel": "45.67"},
+      "receipts": [],
+      "issues_and_assumptions": [
+        {"severity": "warning", "code": "only_allowed_extensions", "message": "Only files matching jpg/jpeg/png/webp were considered."},
+        {"severity": "warning", "code": "default_currency_usd", "message": "Totals assume USD when currency is absent."},
+        {"severity": "warning", "code": "errored_receipts_excluded", "message": "Receipts with OCR/normalization/LLM failures are excluded from aggregation."}
+      ]
+    }
+  }
+]

@@ -34,8 +34,7 @@ from application.traced_tool import ToolContext
 from application.agent_prompts import (
     INGEST_SYSTEM_PROMPT, PER_RECEIPT_SYSTEM_PROMPT, FINALIZE_SYSTEM_PROMPT,
 )
-from application.tool_registry import (
-    # agent-facing tool builders
+from infrastructure.agent_tools import (
     build_load_images_tool, build_filter_by_prompt_tool,
     build_extract_receipt_fields_tool, build_re_extract_with_hint_tool,
     build_normalize_receipt_tool, build_categorize_receipt_tool,

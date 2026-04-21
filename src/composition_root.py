@@ -2,9 +2,6 @@
 Wire adapters -> ports -> application. The only module that imports both
 infrastructure and application.
 """
-import sys
-import pathlib
-
 from fastapi import FastAPI
 from config import Settings, LLMMode
 from application.ports import ChatModelPort
@@ -22,12 +19,7 @@ def build_chat_model_port(settings: Settings) -> ChatModelPort:
             model=settings.deepseek_model,
             timeout_s=settings.llm_timeout_s,
         )
-    # Mock mode: import fake from tests/fakes.
-    # repo_root is one level above src/ so that `tests.fakes.fake_chat_model` is importable.
-    repo_root = str(pathlib.Path(__file__).resolve().parent.parent)
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    from tests.fakes.fake_chat_model import FakeChatModelAdapter, default_mock_script  # type: ignore
+    from infrastructure.llm.fake_chat_model import FakeChatModelAdapter, default_mock_script
     return FakeChatModelAdapter(default_mock_script(max_receipts=settings.max_files_per_run))
 
 

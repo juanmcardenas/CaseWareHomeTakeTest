@@ -278,7 +278,7 @@ async def test_add_assumption_returns_warning_issue():
 # builder smoke test
 # ---------------------------------------------------------------------------
 from langchain_core.tools import BaseTool
-from application.tool_registry import build_load_images_tool
+from infrastructure.agent_tools import build_load_images_tool
 
 
 @pytest.mark.asyncio

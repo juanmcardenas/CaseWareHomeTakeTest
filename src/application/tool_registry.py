@@ -167,6 +167,14 @@ async def filter_by_prompt(
     return FilterResult(kept=kept, dropped=dropped)
 
 
+# 8. re_extract_with_hint — retries OCR with a caller-supplied hint
+@traced_tool("re_extract_with_hint", summarize=_summarize_raw, retries=1)
+async def re_extract_with_hint(
+    ctx: ToolContext, *, ocr: OCRPort, image: ImageRef, hint: str,
+) -> RawReceipt:
+    return await ocr.extract(image, hint=hint)
+
+
 TOOL_NAMES = [
     "load_images",
     "extract_receipt_fields",

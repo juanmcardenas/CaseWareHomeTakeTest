@@ -145,3 +145,31 @@ async def test_filter_by_prompt_food_keyword_matches_restaurant_filename():
     assert len(r.dropped) == 1
     assert r.dropped[0][0] == "uber_receipt.png"
     assert "food" in r.dropped[0][1].lower() or "keyword" in r.dropped[0][1].lower()
+
+
+# ---------------------------------------------------------------------------
+# re_extract_with_hint tests
+# ---------------------------------------------------------------------------
+from domain.models import RawReceipt
+from application.tool_registry import re_extract_with_hint
+
+
+@pytest.mark.asyncio
+async def test_re_extract_with_hint_calls_ocr_with_hint():
+    class HintRecordingOCR(MockOCR):
+        def __init__(self):
+            super().__init__()
+            self.last_hint: str | None = None
+            self.call_count = 0
+
+        async def extract(self, image, hint=None):
+            self.last_hint = hint
+            self.call_count += 1
+            return RawReceipt(source_ref=image.source_ref, vendor="X")
+
+    ocr = HintRecordingOCR()
+    img = _img("a.png")
+    r = await re_extract_with_hint(_fctx(), ocr=ocr, image=img, hint="focus on total")
+    assert ocr.last_hint == "focus on total"
+    assert ocr.call_count == 1
+    assert r.vendor == "X"

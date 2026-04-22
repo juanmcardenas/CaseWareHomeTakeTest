@@ -284,6 +284,12 @@ class GraphRunner:
         )
 
         human = HumanMessage(content=self.prompt or "Process all receipts.")
+        # Iteration bound: LangGraph's default recursion_limit (25) caps ReAct loops
+        # in the outer graph. For the inner agent built by create_agent, the default
+        # is 9999; in practice, a looping model hits a routing KeyError before that
+        # limit. Either way, any Exception (GraphRecursionError, KeyError, etc.) is
+        # caught below and converted into a run-level ingest_iterations_exhausted
+        # event. Same mechanism applies in finalize_node.
         try:
             await agent.ainvoke({"messages": [human]})
         except Exception as e:

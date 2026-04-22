@@ -284,3 +284,34 @@ async def test_full_graph_all_images_filtered_out_emits_filter_error():
     await graph.ainvoke(RunState())
     codes = [e.get("code") for e in bus.published if e.get("event_type") == "error"]
     assert "all_images_filtered_out" in codes
+
+
+@pytest.mark.asyncio
+async def test_ingest_node_infinite_loop_triggers_iterations_exhausted():
+    """
+    Agent that loops calling load_images forever hits LangGraph's internal routing
+    error (KeyError: 'model') because the inner create_agent subgraph cannot route
+    back to the model node once its conditional-edge map is exhausted by the cycling
+    FakeMessagesListChatModel. This KeyError is a subclass of Exception, so the
+    wrapper's except-block catches it and emits ingest_iterations_exhausted.
+    This is the implicit iteration cap — the safety net works through the except
+    Exception clause rather than a per-node max_iterations kwarg.
+    """
+    images = [_img("a.png")]
+    # Script with only tool_calls and no finish: FakeMessagesListChatModel cycles
+    # back to index 0 after exhaustion, so the agent loops calling load_images
+    # until LangGraph's inner agent raises an exception.
+    script = [tool_call("load_images", {})] * 3
+    bus = InMemoryEventBus()
+    r = GraphRunner(
+        run_id=uuid4(), prompt=None,
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader(images), ocr=MockOCR(), llm=MockLLM(),
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    state = await r.ingest_node(RunState())
+
+    codes = [e.get("code") for e in bus.published if e.get("event_type") == "error"]
+    assert "ingest_iterations_exhausted" in codes
+    assert "ingest_iterations_exhausted" in state.errors

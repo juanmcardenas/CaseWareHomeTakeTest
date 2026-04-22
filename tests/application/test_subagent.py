@@ -13,24 +13,18 @@ def _normalized(source_ref="r.png", vendor="Uber"):
 
 
 @pytest.mark.asyncio
-async def test_calls_llm_with_allowed_categories_and_prompt():
+async def test_calls_llm_with_allowed_categories_and_no_user_prompt():
+    """categorize_with_subagent MUST NOT forward the run-level user prompt —
+    letting it influence categorization was observed to collapse the
+    downstream filter into a no-op."""
     llm = MockLLM(default_category=AllowedCategory.TRAVEL)
-    result = await categorize_with_subagent(
-        llm, _normalized(), user_prompt="be conservative",
-    )
+    result = await categorize_with_subagent(llm, _normalized())
     assert result.category == AllowedCategory.TRAVEL
     assert len(llm.calls) == 1
     call = llm.calls[0]
-    assert call.user_prompt == "be conservative"
+    assert call.user_prompt is None
     # allowed_categories passed by value (strings matching the enum values)
     assert set(call.allowed) == {c.value for c in AllowedCategory}
-
-
-@pytest.mark.asyncio
-async def test_prompt_defaults_to_none():
-    llm = MockLLM()
-    await categorize_with_subagent(llm, _normalized(), user_prompt=None)
-    assert llm.calls[0].user_prompt is None
 
 
 @pytest.mark.asyncio
@@ -47,4 +41,4 @@ async def test_rejects_out_of_band_category_classifies_as_invalid(monkeypatch):
             raise ValueError("invalid category")
 
     with pytest.raises(ValueError):
-        await categorize_with_subagent(BadLLM(), _normalized(), user_prompt=None)
+        await categorize_with_subagent(BadLLM(), _normalized())

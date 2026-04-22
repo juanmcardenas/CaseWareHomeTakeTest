@@ -80,13 +80,17 @@ async def test_normalize_receipt_returns_normalized():
 
 
 @pytest.mark.asyncio
-async def test_categorize_receipt_calls_llm_with_prompt():
+async def test_categorize_receipt_does_not_pass_user_prompt_to_llm():
+    """The run-level user prompt must NOT influence categorization — it is a
+    filter concern, and letting it reach the LLM was observed to collapse the
+    downstream filter into a no-op (the categorizer would re-label receipts to
+    match the user's intent)."""
     bus = InMemoryEventBus()
     llm = MockLLM(default_category=AllowedCategory.TRAVEL)
     n = NormalizedReceipt(source_ref="a.png", vendor="V", total=Decimal("10"))
-    cat = await categorize_receipt(_ctx(bus), llm=llm, normalized=n, user_prompt="test")
+    cat = await categorize_receipt(_ctx(bus), llm=llm, normalized=n)
     assert cat.category == AllowedCategory.TRAVEL
-    assert llm.calls[0].user_prompt == "test"
+    assert llm.calls[0].user_prompt is None
 
 
 @pytest.mark.asyncio

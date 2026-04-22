@@ -74,10 +74,9 @@ def _summarize_categorization(c: Categorization) -> dict:
 
 @traced_tool("categorize_receipt", summarize=_summarize_categorization, retries=1)
 async def categorize_receipt(
-    ctx: ToolContext, *, llm: LLMPort,
-    normalized: NormalizedReceipt, user_prompt: str | None,
+    ctx: ToolContext, *, llm: LLMPort, normalized: NormalizedReceipt,
 ) -> Categorization:
-    return await categorize_with_subagent(llm, normalized, user_prompt)
+    return await categorize_with_subagent(llm, normalized)
 
 
 # 5. aggregate

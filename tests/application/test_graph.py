@@ -371,8 +371,9 @@ async def test_ingest_node_infinite_loop_triggers_iterations_exhausted():
 
 @pytest.mark.asyncio
 async def test_finalize_node_filter_excludes_non_matching_from_aggregate():
-    """When the finalize agent calls filter_by_prompt with a category-matching prompt,
-    only matching receipts survive to aggregate."""
+    """finalize_node applies filter_by_prompt deterministically (pre-agent)
+    when a prompt names a category. Only matching receipts survive to
+    aggregate; the agent itself no longer calls filter_by_prompt."""
     ok_meals = Receipt(
         id=uuid4(), source_ref="m.png", status="ok",
         category=AllowedCategory.MEALS, confidence=0.9, notes="x",
@@ -385,7 +386,6 @@ async def test_finalize_node_filter_excludes_non_matching_from_aggregate():
     )
     bus = InMemoryEventBus()
     script = [
-        tool_call("filter_by_prompt", {}),
         tool_call("aggregate", {}),
         tool_call("detect_anomalies", {}),
         tool_call("generate_report", {}),
@@ -408,12 +408,20 @@ async def test_finalize_node_filter_excludes_non_matching_from_aggregate():
     receipts_by_ref = {rc["source_ref"]: rc for rc in final["receipts"]}
     assert receipts_by_ref["m.png"]["status"] == "ok"
     assert receipts_by_ref["t.png"]["status"] == "filtered"
+    # filter_by_prompt SSE events must still fire — they're emitted by the
+    # @traced_tool decorator regardless of caller (agent or deterministic).
+    filter_tool_calls = [
+        e for e in bus.published
+        if e.get("event_type") == "tool_call" and e.get("tool") == "filter_by_prompt"
+    ]
+    assert len(filter_tool_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_finalize_node_no_filter_when_agent_skips_it():
-    """When the finalize agent doesn't call filter_by_prompt, all OK receipts
-    count toward aggregates as normal — even if the prompt implied filtering."""
+async def test_finalize_node_generic_prompt_is_a_noop_filter():
+    """When the prompt names no known category, filter_by_prompt runs as a
+    no-op (no receipts flip to 'filtered') and all OK receipts count toward
+    aggregates as normal."""
     ok_meals = Receipt(
         id=uuid4(), source_ref="m.png", status="ok",
         category=AllowedCategory.MEALS, confidence=0.9, notes="x",
@@ -432,7 +440,7 @@ async def test_finalize_node_no_filter_when_agent_skips_it():
         finish(),
     ]
     r = GraphRunner(
-        run_id=uuid4(), prompt="only food",
+        run_id=uuid4(), prompt="please be thorough",
         bus=bus, tracer=_NullTracer(),
         image_loader=MockImageLoader([]), ocr=MockOCR(), llm=MockLLM(),
         chat_model_port=FakeChatModelAdapter(script),
@@ -477,7 +485,6 @@ async def test_full_graph_with_filter_prompt_yields_partial_aggregates():
         tool_call("normalize_receipt", {}),
         tool_call("categorize_receipt", {}),
         finish(),
-        tool_call("filter_by_prompt", {}),
         tool_call("aggregate", {}),
         tool_call("detect_anomalies", {}),
         tool_call("generate_report", {}),

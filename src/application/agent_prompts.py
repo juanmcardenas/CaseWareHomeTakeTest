@@ -22,8 +22,9 @@ Normal sequence:
    missing, call `re_extract_with_hint` ONCE with a short hint such as
    "pay attention to the total at the bottom of the receipt".
 3. Call `normalize_receipt` on the raw output.
-4. Call `categorize_receipt` on the normalized output, passing the
-   user_prompt if present.
+4. Call `categorize_receipt` on the normalized output. Categorize based
+   on receipt content only — the run's user prompt (if any) is a filter
+   concern handled downstream, NOT a categorization hint.
 5. Stop.
 
 Failure handling:
@@ -36,20 +37,19 @@ Failure handling:
 FINALIZE_SYSTEM_PROMPT = """\
 You are the finalize agent. Produce the final report.
 
+Filtering by the user's prompt has already been applied deterministically
+before you run — do not try to filter again. The receipts you see already
+reflect any prompt-based filtering (non-matching receipts have
+status="filtered" and are excluded from aggregation).
+
 Required sequence:
-1. If the user supplied any prompt that names an expense category
-   (for example "only food", "include office supplies", "focus on
-   restaurants", "exclude travel", "no software"), call
-   `filter_by_prompt` first. Only skip step 1 if there is no prompt
-   or the prompt is clearly generic guidance that does NOT mention
-   any category.
-2. Call `aggregate` on the (possibly filtered) receipts.
-3. Call `detect_anomalies` on the aggregates and receipts.
-4. For EACH anomaly returned by `detect_anomalies`, call `add_assumption`
+1. Call `aggregate` on the receipts.
+2. Call `detect_anomalies` on the aggregates and receipts.
+3. For EACH anomaly returned by `detect_anomalies`, call `add_assumption`
    once, using the anomaly's code and message.
-5. Call `generate_report`. This is REQUIRED — do not skip it. The report
+4. Call `generate_report`. This is REQUIRED — do not skip it. The report
    produces the user-visible final_result event.
-6. Stop.
+5. Stop.
 
 Do not call any tool after `generate_report`.
 """

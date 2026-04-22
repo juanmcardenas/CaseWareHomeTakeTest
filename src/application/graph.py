@@ -32,11 +32,12 @@ from application.ports import (
     ReportRepositoryPort, TracerPort,
 )
 from application.traced_tool import ToolContext
+from application.tool_registry import filter_by_prompt as _filter_by_prompt_tool
 from application.agent_prompts import (
     INGEST_SYSTEM_PROMPT, PER_RECEIPT_SYSTEM_PROMPT, FINALIZE_SYSTEM_PROMPT,
 )
 from infrastructure.agent_tools import (
-    build_load_images_tool, build_filter_by_prompt_tool,
+    build_load_images_tool,
     build_extract_receipt_fields_tool, build_re_extract_with_hint_tool,
     build_normalize_receipt_tool, build_categorize_receipt_tool,
     build_skip_receipt_tool, build_aggregate_tool, build_detect_anomalies_tool,
@@ -183,32 +184,6 @@ def _capture_aggregates(tool, holder: dict):
     )
 
 
-def _capture_filtered_receipts(tool, receipts_holder: dict):
-    """Wrap filter_by_prompt so its returned list[Receipt] replaces the
-    receipts_holder's receipts. Downstream finalize tools (aggregate,
-    detect_anomalies, generate_report) read from this holder.
-    """
-    from langchain_core.tools import StructuredTool
-    original_coro = tool.coroutine
-
-    async def _wrapped(*args, **kwargs):
-        result = await original_coro(*args, **kwargs)
-        hydrated: list[Receipt] = []
-        if isinstance(result, list):
-            for d in result:
-                if isinstance(d, Receipt):
-                    hydrated.append(d)
-                elif isinstance(d, dict):
-                    hydrated.append(Receipt(**d))
-        receipts_holder["receipts"] = hydrated
-        return result
-
-    return StructuredTool.from_function(
-        coroutine=_wrapped, name=tool.name, description=tool.description,
-        args_schema=tool.args_schema,
-    )
-
-
 class RunState(BaseModel):
     images: list[ImageRef] = Field(default_factory=list)
     filtered_out: list[tuple[str, str]] = Field(default_factory=list)
@@ -344,7 +319,6 @@ class GraphRunner:
             build_categorize_receipt_tool(
                 ctx_factory=lambda: self._ctx(receipt_id),
                 llm=self.llm, normalized_holder=normalized_holder,
-                user_prompt=self.prompt,
             ),
             categorization_holder,
         )
@@ -468,18 +442,18 @@ class GraphRunner:
 
         await self._progress("finalize_start")
 
-        # Mutable receipts holder: filter_by_prompt (if called) replaces this
-        # with a filtered list. Aggregate/anomalies/report all read from here.
-        receipts_holder: dict = {"receipts": list(state.receipts)}
-
-        filter_tool = _capture_filtered_receipts(
-            build_filter_by_prompt_tool(
-                ctx_factory=lambda: self._ctx(),
-                receipts_provider=lambda: list(receipts_holder["receipts"]),
-                user_prompt=self.prompt,
-            ),
-            receipts_holder,
+        # Deterministic filter: call filter_by_prompt directly (pre-agent) when a
+        # prompt is present. Decorated with @traced_tool, so SSE tool_call /
+        # tool_result events still fire. The agent doesn't get discretion here —
+        # DeepSeek was observed to skip filter_by_prompt even with explicit
+        # prompt-engineering, and filter_by_prompt is a safe no-op when the prompt
+        # maps to no known category.
+        filtered_receipts = await _filter_by_prompt_tool(
+            self._ctx(),
+            receipts=list(state.receipts),
+            user_prompt=self.prompt,
         )
+        receipts_holder: dict = {"receipts": list(filtered_receipts)}
 
         aggregates_holder: dict = {}
         report_holder: dict = {}
@@ -532,7 +506,7 @@ class GraphRunner:
 
         agent = create_agent(
             model=self.chat_model_port.build(),
-            tools=[filter_tool, aggregate_tool, detect_tool, add_assumption_tool, generate_report_tool],
+            tools=[aggregate_tool, detect_tool, add_assumption_tool, generate_report_tool],
             system_prompt=FINALIZE_SYSTEM_PROMPT,
         )
 

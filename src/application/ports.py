@@ -30,7 +30,11 @@ class OCRPort(ABC):
 
 
 class LLMPort(ABC):
-    """One call per receipt. Implementation MUST inject `user_prompt` into its system message."""
+    """One call per receipt. The `user_prompt` kwarg is accepted for backward
+    compatibility with adapter implementations but is currently always passed
+    as None — letting the run-level prompt influence categorization was
+    observed to collapse the downstream filter into a no-op. Filtering is
+    handled by `filter_by_prompt` after categorization."""
     @abstractmethod
     async def categorize(
         self,

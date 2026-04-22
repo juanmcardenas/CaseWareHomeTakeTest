@@ -117,7 +117,7 @@ async def test_generate_report_bundles_fields():
 # ---------------------------------------------------------------------------
 # filter_by_prompt tests
 # ---------------------------------------------------------------------------
-from application.tool_registry import filter_by_prompt, FilterResult
+from application.tool_registry import filter_by_prompt
 
 
 @pytest.mark.asyncio
@@ -291,3 +291,36 @@ async def test_build_load_images_tool_returns_base_tool_usable_by_agent():
     result = await tool.ainvoke({})
     assert isinstance(result, list)
     assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# _parse_prompt tests
+# ---------------------------------------------------------------------------
+from application.tool_registry import _parse_prompt
+from domain.models import AllowedCategory as _AC
+
+
+@pytest.mark.parametrize("prompt,expected_exclude", [
+    ("exclude travel", {_AC.TRAVEL}),
+    ("except food", {_AC.MEALS}),
+    ("not office", {_AC.OFFICE_SUPPLIES}),
+    ("no travel please", {_AC.TRAVEL}),
+    ("without software", {_AC.SOFTWARE}),
+    ("skip utilities", {_AC.UTILITIES}),
+])
+def test_parse_prompt_detects_exclusion_on_each_negation_word(prompt, expected_exclude):
+    include, exclude = _parse_prompt(prompt)
+    assert include == set()
+    assert exclude == expected_exclude
+
+
+def test_parse_prompt_include_is_default_when_no_negation():
+    include, exclude = _parse_prompt("only food")
+    assert exclude == set()
+    assert include == {_AC.MEALS}
+
+
+def test_parse_prompt_multiple_categories():
+    include, exclude = _parse_prompt("food and office supplies please")
+    assert exclude == set()
+    assert include == {_AC.MEALS, _AC.OFFICE_SUPPLIES}

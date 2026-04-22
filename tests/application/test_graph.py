@@ -72,6 +72,28 @@ async def test_ingest_node_with_prompt_filter_drops_non_matching():
 
 
 @pytest.mark.asyncio
+async def test_ingest_node_kept_images_after_filter_have_path_not_string_local_path():
+    """Regression for: filter_by_prompt returns a FilterResult whose
+    Pydantic model_dump converts local_path to a string. The capture
+    helper must rehydrate it back to a Path, otherwise downstream OCR
+    calls image.local_path.read_bytes() on a string and crashes.
+    """
+    images = [_img("restaurant.png"), _img("uber.png")]
+    script = [
+        tool_call("load_images", {}),
+        tool_call("filter_by_prompt", {}),
+        finish(),
+    ]
+    r = _runner(prompt="only food", images=images, script=script)
+    state = await r.ingest_node(RunState())
+    assert len(state.images) == 1
+    assert isinstance(state.images[0].local_path, Path), (
+        f"local_path must be Path, got {type(state.images[0].local_path).__name__}: "
+        f"{state.images[0].local_path!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_ingest_node_empty_returns_state_with_no_images():
     script = [
         tool_call("load_images", {}),

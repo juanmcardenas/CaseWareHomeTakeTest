@@ -13,6 +13,7 @@ by thin wrappers that project typed RunState in/out.
 from __future__ import annotations
 from datetime import datetime, timezone
 from itertools import count
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -56,10 +57,18 @@ def _now() -> datetime:
 
 
 def _to_image_ref(d) -> "ImageRef":
-    """Coerce a dict or an ImageRef dataclass to an ImageRef."""
+    """Coerce a dict or an ImageRef dataclass to an ImageRef.
+
+    When an ImageRef flows through Pydantic's model_dump(mode="json")
+    (e.g. as part of FilterResult in filter_by_prompt's return value),
+    local_path is serialized to a string. ImageRef is a frozen dataclass
+    that does not coerce types on construction, so we must explicitly
+    wrap the path back into a Path — otherwise downstream consumers call
+    image.local_path.read_bytes() on a string.
+    """
     if isinstance(d, ImageRef):
         return d
-    return ImageRef(source_ref=d["source_ref"], local_path=d["local_path"])
+    return ImageRef(source_ref=d["source_ref"], local_path=Path(d["local_path"]))
 
 
 def _capture_list(tool, sink: list, item_cls):

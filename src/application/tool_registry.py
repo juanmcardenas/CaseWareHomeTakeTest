@@ -138,7 +138,7 @@ _CATEGORY_KEYWORD_MAP: dict[AllowedCategory, list[str]] = {
         "office", "supplies", "stationery", "paper", "desk",
     ],
     AllowedCategory.SHIPPING: [
-        "shipping", "postage", "mail", "delivery", "courier", "post",
+        "shipping", "postage", "mail", "delivery", "courier",
     ],
     AllowedCategory.UTILITIES: [
         "utility", "utilities", "electric", "electricity", "water",
@@ -146,7 +146,7 @@ _CATEGORY_KEYWORD_MAP: dict[AllowedCategory, list[str]] = {
     ],
 }
 
-_NEGATION_WORDS: tuple[str, ...] = ("exclude", "except", "not", "no ", "without", "skip")
+_NEGATION_WORDS: tuple[str, ...] = ("exclude", "except", "not ", "no ", "without", "skip")
 
 
 def _parse_prompt(prompt: str) -> tuple[set[AllowedCategory], set[AllowedCategory]]:

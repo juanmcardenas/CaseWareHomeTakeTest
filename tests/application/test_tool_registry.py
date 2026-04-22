@@ -197,6 +197,23 @@ async def test_filter_by_prompt_multi_category_include():
 
 
 @pytest.mark.asyncio
+async def test_filter_by_prompt_multi_category_exclude():
+    meals = _ok_receipt(_AC.MEALS, source_ref="m")
+    travel = _ok_receipt(_AC.TRAVEL, source_ref="t")
+    software = _ok_receipt(_AC.SOFTWARE, source_ref="s")
+    office = _ok_receipt(_AC.OFFICE_SUPPLIES, source_ref="o")
+    out = await _filter_by_prompt(
+        _fctx(), receipts=[meals, travel, software, office],
+        user_prompt="exclude travel and software",
+    )
+    out_by_ref = {r.source_ref: r for r in out}
+    assert out_by_ref["m"].status == "ok"
+    assert out_by_ref["t"].status == "filtered"
+    assert out_by_ref["s"].status == "filtered"
+    assert out_by_ref["o"].status == "ok"
+
+
+@pytest.mark.asyncio
 async def test_filter_by_prompt_filtered_receipts_have_issue():
     travel = _ok_receipt(_AC.TRAVEL, source_ref="t")
     out = await _filter_by_prompt(_fctx(), receipts=[travel], user_prompt="only food")
@@ -395,3 +412,17 @@ def test_parse_prompt_multiple_categories():
     include, exclude = _parse_prompt("food and office supplies please")
     assert exclude == set()
     assert include == {_AC.MEALS, _AC.OFFICE_SUPPLIES}
+
+
+@pytest.mark.parametrize("prompt", [
+    "notable meals",         # "not" was previously a bare substring
+    "I want a note of food",
+    "snotty review of restaurants",
+])
+def test_parse_prompt_does_not_treat_words_containing_not_as_negation(prompt):
+    """Regression: before the `"not "` fix, prompts containing 'not' as a
+    substring (notable, note, snotty) were parsed as exclusions and flipped
+    user intent."""
+    include, exclude = _parse_prompt(prompt)
+    assert exclude == set(), f"'{prompt}' should not be treated as an exclusion"
+    assert include == {_AC.MEALS}

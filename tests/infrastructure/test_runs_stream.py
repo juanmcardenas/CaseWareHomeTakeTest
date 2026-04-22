@@ -67,3 +67,52 @@ def test_traces_written_through(client1):
     event_types = [row["event_type"] for row in trace_repo.rows]
     assert "run_started" in event_types
     assert "final_result" in event_types
+
+
+def test_image_paths_happy_path(client1):
+    """POST with a single image_paths entry; expect run_started, receipt_result, final_result."""
+    c, *_ = client1
+    events = _collect_stream(
+        c,
+        json={
+            "image_paths": ["./tests/fixtures/folder/fixture_a.png"],
+            "prompt": None,
+        },
+    )
+    kinds = [e[0] for e in events]
+    assert kinds[0] == "run_started"
+    assert "final_result" in kinds
+    assert kinds.count("receipt_result") == 1
+
+
+def test_image_paths_bad_path_returns_400(client1):
+    """A path that doesn't exist (still under ASSETS_DIR) returns HTTP 400 before streaming."""
+    c, *_ = client1
+    r = c.post(
+        "/runs/stream",
+        json={"image_paths": ["./tests/fixtures/folder/does_not_exist.png"]},
+    )
+    assert r.status_code == 400
+    assert "does_not_exist.png" in r.text
+    assert "does not exist" in r.text
+
+
+def test_image_paths_and_folder_path_both_returns_422(client1):
+    """Body with both fields is rejected with 422."""
+    c, *_ = client1
+    r = c.post(
+        "/runs/stream",
+        json={
+            "folder_path": "./tests/fixtures/folder",
+            "image_paths": ["./tests/fixtures/folder/fixture_a.png"],
+        },
+    )
+    assert r.status_code == 422
+    assert "exactly one" in r.text
+
+
+def test_image_paths_neither_folder_nor_paths_returns_422(client1):
+    """Body with neither field is rejected with 422."""
+    c, *_ = client1
+    r = c.post("/runs/stream", json={"prompt": "just a prompt"})
+    assert r.status_code == 422

@@ -8,10 +8,12 @@ wrappers bypasses the trace — don't do that.
 Network-sensitive tools (extract_receipt_fields, categorize_receipt) retry
 once on network-class exceptions per plan revision R1.
 """
+from decimal import Decimal
 from uuid import UUID
+from pydantic import BaseModel
 from domain.aggregation import aggregate as _aggregate_pure
 from domain.models import (
-    Aggregates, AllowedCategory, Categorization, Issue, NormalizedReceipt,
+    Aggregates, AllowedCategory, Anomaly, Categorization, Issue, NormalizedReceipt,
     RawReceipt, Receipt, Report,
 )
 from domain.normalization import normalize as _normalize_pure
@@ -118,6 +120,136 @@ async def generate_report(
     )
 
 
+# 7. filter_by_prompt — pure-Python keyword heuristic
+_PROMPT_KEYWORD_MAP: dict[str, list[str]] = {
+    "food": ["restaurant", "cafe", "lunch", "dinner", "meal", "food", "coffee"],
+    "travel": ["uber", "lyft", "taxi", "flight", "hotel", "airbnb", "train"],
+    "office": ["office", "supplies", "staples", "paper"],
+    "software": ["subscription", "saas", "stripe", "github", "aws"],
+}
+
+
+class FilterResult(BaseModel):
+    kept: list[ImageRef]
+    dropped: list[tuple[str, str]]
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+def _matched_keywords(prompt: str) -> list[str]:
+    prompt_lower = prompt.lower()
+    matched: list[str] = []
+    for trigger, keywords in _PROMPT_KEYWORD_MAP.items():
+        if trigger in prompt_lower:
+            matched.extend(keywords)
+    return matched
+
+
+@traced_tool(
+    "filter_by_prompt",
+    summarize=lambda r: {"kept": len(r.kept), "dropped": len(r.dropped)},
+)
+async def filter_by_prompt(
+    ctx: ToolContext, *, images: list[ImageRef], user_prompt: str | None,
+) -> FilterResult:
+    if not user_prompt:
+        return FilterResult(kept=list(images), dropped=[])
+    keywords = _matched_keywords(user_prompt)
+    if not keywords:
+        return FilterResult(kept=list(images), dropped=[])
+    kept: list[ImageRef] = []
+    dropped: list[tuple[str, str]] = []
+    for img in images:
+        name = img.source_ref.lower()
+        if any(kw in name for kw in keywords):
+            kept.append(img)
+        else:
+            dropped.append((img.source_ref, f"no keyword from prompt ({', '.join(keywords)}) in filename"))
+    return FilterResult(kept=kept, dropped=dropped)
+
+
+# 8. re_extract_with_hint — retries OCR with a caller-supplied hint
+@traced_tool("re_extract_with_hint", summarize=_summarize_raw, retries=1)
+async def re_extract_with_hint(
+    ctx: ToolContext, *, ocr: OCRPort, image: ImageRef, hint: str,
+) -> RawReceipt:
+    return await ocr.extract(image, hint=hint)
+
+
+# 9. skip_receipt — agent-driven skip
+def _summarize_skip(r: Receipt) -> dict:
+    return {"id": str(r.id), "reason": r.error}
+
+
+@traced_tool("skip_receipt", summarize=_summarize_skip)
+async def skip_receipt(
+    ctx: ToolContext, *, receipt_id: UUID, reason: str,
+) -> Receipt:
+    return Receipt(
+        id=receipt_id,
+        source_ref="",
+        status="error",
+        error=reason,
+        issues=[Issue(
+            severity="receipt_error",
+            code="agent_skipped",
+            message=reason,
+            receipt_id=receipt_id,
+        )],
+    )
+
+
+# 10. detect_anomalies — pure rules over aggregates + receipts
+def _summarize_anomalies(result: list[Anomaly]) -> dict:
+    return {"count": len(result), "codes": [a.code for a in result]}
+
+
+@traced_tool("detect_anomalies", summarize=_summarize_anomalies)
+async def detect_anomalies(
+    ctx: ToolContext, *, aggregates: Aggregates, receipts: list[Receipt],
+) -> list[Anomaly]:
+    out: list[Anomaly] = []
+    ok_receipts = [r for r in receipts if r.status == "ok" and r.total is not None]
+    total = aggregates.total_spend
+
+    # Rule 1: single receipt >= 80% of spend
+    if ok_receipts and total > 0:
+        for r in ok_receipts:
+            if (r.total / total) >= Decimal("0.80"):
+                out.append(Anomaly(
+                    code="single_receipt_dominant",
+                    message=f"Receipt {r.source_ref or r.id} is {(r.total / total * 100):.0f}% of total spend",
+                ))
+                break
+
+    # Rule 2: currency mix
+    currencies = {r.currency for r in ok_receipts if r.currency}
+    if len(currencies) > 1:
+        out.append(Anomaly(
+            code="currency_mix",
+            message=f"Receipts contain multiple currencies: {sorted(currencies)}",
+        ))
+
+    # Rule 3: >= 50% of ok receipts missing dates
+    if ok_receipts:
+        missing = sum(1 for r in ok_receipts if r.receipt_date is None)
+        if missing / len(ok_receipts) >= 0.5:
+            out.append(Anomaly(
+                code="many_missing_dates",
+                message=f"{missing} of {len(ok_receipts)} receipts are missing a date",
+            ))
+
+    return out
+
+
+# 11. add_assumption — agent narrates a warning into the final report
+@traced_tool("add_assumption", summarize=lambda i: {"code": i.code})
+async def add_assumption(
+    ctx: ToolContext, *, code: str, message: str,
+) -> Issue:
+    return Issue(severity="warning", code=code, message=message)
+
+
 TOOL_NAMES = [
     "load_images",
     "extract_receipt_fields",
@@ -125,4 +257,9 @@ TOOL_NAMES = [
     "categorize_receipt",
     "aggregate",
     "generate_report",
+    "filter_by_prompt",
+    "re_extract_with_hint",
+    "skip_receipt",
+    "detect_anomalies",
+    "add_assumption",
 ]

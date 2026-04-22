@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 from uuid import UUID
 from domain.models import Categorization, NormalizedReceipt, RawReceipt
+from langchain_core.language_models import BaseChatModel
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,7 @@ class ImageLoaderPort(ABC):
 
 class OCRPort(ABC):
     @abstractmethod
-    async def extract(self, image: ImageRef) -> RawReceipt: ...
+    async def extract(self, image: ImageRef, hint: str | None = None) -> RawReceipt: ...
 
 
 class LLMPort(ABC):
@@ -76,3 +77,14 @@ class TracerPort(ABC):
 class TracerSpan(ABC):
     @abstractmethod
     def end(self, output: dict | None = None, error: str | None = None) -> None: ...
+
+
+class ChatModelPort(ABC):
+    """Factory for a LangChain BaseChatModel used by per-node agents.
+
+    Implementations belong in infrastructure/ and must NOT be imported by
+    application code outside graph.py.
+    """
+
+    @abstractmethod
+    def build(self) -> BaseChatModel: ...

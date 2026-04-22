@@ -23,8 +23,9 @@ def _collect_stream(client, **kwargs):
     return _parse_sse(body)
 
 
-def test_multipart_happy_path(client):
-    c, report_repo, trace_repo = client
+def test_multipart_happy_path(client2):
+    """Upload 2 receipt images; expect run_started, 2 receipt_result, final_result."""
+    c, report_repo, trace_repo = client2
     p1 = Path("tests/fixtures/receipts/fixture_001.png").read_bytes()
     p2 = Path("tests/fixtures/receipts/fixture_002.png").read_bytes()
     events = _collect_stream(
@@ -41,8 +42,9 @@ def test_multipart_happy_path(client):
     assert kinds.count("receipt_result") == 2
 
 
-def test_folder_happy_path(client):
-    c, *_ = client
+def test_folder_happy_path(client1):
+    """Point at a folder with 1 image; expect run_started, 1 receipt_result, final_result."""
+    c, *_ = client1
     events = _collect_stream(
         c,
         json={"folder_path": "./tests/fixtures/folder", "prompt": None},
@@ -53,8 +55,9 @@ def test_folder_happy_path(client):
     assert kinds.count("receipt_result") == 1
 
 
-def test_traces_written_through(client):
-    c, report_repo, trace_repo = client
+def test_traces_written_through(client1):
+    """Traces for run_started and final_result are written to the trace repo."""
+    c, report_repo, trace_repo = client1
     _collect_stream(
         c,
         files=[("files", ("r1.png",

@@ -101,3 +101,18 @@ def test_report_bundles_fields():
         issues_and_assumptions=[],
     )
     assert rep.run_id == run_id
+
+
+from domain.models import Anomaly
+
+
+def test_anomaly_defaults_to_warning_severity():
+    a = Anomaly(code="single_receipt_dominant", message="One receipt is 85% of total spend")
+    assert a.code == "single_receipt_dominant"
+    assert a.message.startswith("One receipt")
+    assert a.severity == "warning"
+
+
+def test_anomaly_accepts_notice_severity():
+    a = Anomaly(code="currency_mix", message="Multiple currencies present", severity="notice")
+    assert a.severity == "notice"

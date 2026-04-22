@@ -92,3 +92,9 @@ class Report(BaseModel):
     by_category: dict[str, Decimal]
     receipts: list[Receipt]
     issues_and_assumptions: list[Issue]
+
+
+class Anomaly(BaseModel):
+    code: str
+    message: str
+    severity: Literal["warning", "notice"] = "warning"

@@ -10,7 +10,7 @@ class MockOCR(OCRPort):
         self._responses = responses or {}
         self._fail_on = fail_on or set()
 
-    async def extract(self, image: ImageRef) -> RawReceipt:
+    async def extract(self, image: ImageRef, hint: str | None = None) -> RawReceipt:
         if image.source_ref in self._fail_on:
             raise RuntimeError(f"mock OCR configured to fail on {image.source_ref}")
         if image.source_ref in self._responses:

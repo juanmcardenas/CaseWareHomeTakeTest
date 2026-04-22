@@ -10,7 +10,7 @@ _VENDORS = ["Uber", "Delta", "Starbucks", "Staples", "FedEx", "AWS", "ConEd"]
 
 
 class MockOCRAdapter(OCRPort):
-    async def extract(self, image: ImageRef) -> RawReceipt:
+    async def extract(self, image: ImageRef, hint: str | None = None) -> RawReceipt:
         h = int(hashlib.sha256(image.source_ref.encode()).hexdigest(), 16)
         vendor = _VENDORS[h % len(_VENDORS)]
         total_cents = 500 + (h % 9500)

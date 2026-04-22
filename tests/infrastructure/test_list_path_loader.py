@@ -44,3 +44,57 @@ def test_rejects_adjacent_prefix_path(tmp_path):
     evil.write_bytes(b"\x89PNG")
     with pytest.raises(ValueError, match="must be under"):
         ListPathImageLoader([str(evil)], ALLOWED, assets)
+
+
+def test_rejects_empty_list(tmp_path):
+    with pytest.raises(ValueError, match="must not be empty"):
+        ListPathImageLoader([], ALLOWED, tmp_path)
+
+
+def test_rejects_path_outside_assets(tmp_path):
+    assets = _make_assets(tmp_path)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"\x89PNG")
+    with pytest.raises(ValueError, match="must be under"):
+        ListPathImageLoader([str(outside)], ALLOWED, assets)
+
+
+def test_rejects_missing_file(tmp_path):
+    assets = _make_assets(tmp_path)
+    with pytest.raises(ValueError, match="does not exist"):
+        ListPathImageLoader([str(assets / "ghost.png")], ALLOWED, assets)
+
+
+def test_rejects_directory(tmp_path):
+    assets = _make_assets(tmp_path)
+    subdir = assets / "sub"
+    subdir.mkdir()
+    with pytest.raises(ValueError, match="is not a file"):
+        ListPathImageLoader([str(subdir)], ALLOWED, assets)
+
+
+def test_rejects_disallowed_extension(tmp_path):
+    assets = _make_assets(tmp_path)
+    exe = assets / "script.exe"
+    exe.write_bytes(b"MZ")
+    with pytest.raises(ValueError, match=r"extension \.exe"):
+        ListPathImageLoader([str(exe)], ALLOWED, assets)
+
+
+def test_aggregates_all_failures(tmp_path):
+    assets = _make_assets(tmp_path)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"\x89PNG")
+    exe = assets / "script.exe"
+    exe.write_bytes(b"MZ")
+    with pytest.raises(ValueError) as exc_info:
+        ListPathImageLoader(
+            [str(outside), str(assets / "ghost.png"), str(exe)],
+            ALLOWED, assets,
+        )
+    msg = str(exc_info.value)
+    # All three bad paths reported in one message
+    assert "outside.png" in msg
+    assert "ghost.png" in msg
+    assert "script.exe" in msg
+    assert msg.count("\n") >= 3  # header line + 3 reason lines

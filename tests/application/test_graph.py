@@ -57,40 +57,38 @@ async def test_ingest_node_happy_path_populates_state_images():
 
 
 @pytest.mark.asyncio
-async def test_ingest_node_with_prompt_filter_drops_non_matching():
+async def test_ingest_node_ignores_prompt_filtering_intent():
+    """ingest_node no longer has a filter tool — filtering moved to finalize.
+    Even with a filter-shaped prompt, all loaded images pass through."""
     images = [_img("restaurant.png"), _img("uber.png")]
     script = [
         tool_call("load_images", {}),
-        tool_call("filter_by_prompt", {}),
         finish(),
     ]
     r = _runner(prompt="only food", images=images, script=script)
     state = await r.ingest_node(RunState())
-    assert [i.source_ref for i in state.images] == ["restaurant.png"]
-    assert len(state.filtered_out) == 1
-    assert state.filtered_out[0][0] == "uber.png"
+    assert len(state.images) == 2
+    assert state.filtered_out == []
 
 
 @pytest.mark.asyncio
-async def test_ingest_node_kept_images_after_filter_have_path_not_string_local_path():
-    """Regression for: filter_by_prompt returns a FilterResult whose
-    Pydantic model_dump converts local_path to a string. The capture
-    helper must rehydrate it back to a Path, otherwise downstream OCR
-    calls image.local_path.read_bytes() on a string and crashes.
-    """
+async def test_ingest_node_kept_images_have_path_not_string_local_path():
+    """load_images returns ImageRefs whose local_path must remain a Path object
+    (not a string) so that downstream OCR calls image.local_path.read_bytes()
+    without error."""
     images = [_img("restaurant.png"), _img("uber.png")]
     script = [
         tool_call("load_images", {}),
-        tool_call("filter_by_prompt", {}),
         finish(),
     ]
     r = _runner(prompt="only food", images=images, script=script)
     state = await r.ingest_node(RunState())
-    assert len(state.images) == 1
-    assert isinstance(state.images[0].local_path, Path), (
-        f"local_path must be Path, got {type(state.images[0].local_path).__name__}: "
-        f"{state.images[0].local_path!r}"
-    )
+    assert len(state.images) == 2
+    for img in state.images:
+        assert isinstance(img.local_path, Path), (
+            f"local_path must be Path, got {type(img.local_path).__name__}: "
+            f"{img.local_path!r}"
+        )
 
 
 @pytest.mark.asyncio
@@ -321,16 +319,15 @@ async def test_full_graph_zero_images_emits_no_images():
 
 
 @pytest.mark.asyncio
-async def test_full_graph_all_images_filtered_out_emits_filter_error():
-    images = [_img("uber.png")]
-    script = [
-        tool_call("load_images", {}), tool_call("filter_by_prompt", {}), finish(),
-    ]
+async def test_full_graph_no_images_loaded_emits_no_images_error():
+    """When the agent loads no images, the graph emits no_images and terminates.
+    (filter_by_prompt is no longer available in ingest; filtering happens in finalize.)"""
+    script = [tool_call("load_images", {}), finish()]
     bus = InMemoryEventBus()
     r = GraphRunner(
         run_id=uuid4(), prompt="only food",
         bus=bus, tracer=_NullTracer(),
-        image_loader=MockImageLoader(images), ocr=MockOCR(), llm=MockLLM(),
+        image_loader=MockImageLoader([]), ocr=MockOCR(), llm=MockLLM(),
         chat_model_port=FakeChatModelAdapter(script),
         report_repo=InMemoryReportRepository(),
     )
@@ -338,7 +335,7 @@ async def test_full_graph_all_images_filtered_out_emits_filter_error():
     graph = build_graph(r)
     await graph.ainvoke(RunState())
     codes = [e.get("code") for e in bus.published if e.get("event_type") == "error"]
-    assert "all_images_filtered_out" in codes
+    assert "no_images" in codes
 
 
 @pytest.mark.asyncio
@@ -370,3 +367,148 @@ async def test_ingest_node_infinite_loop_triggers_iterations_exhausted():
     codes = [e.get("code") for e in bus.published if e.get("event_type") == "error"]
     assert "ingest_iterations_exhausted" in codes
     assert "ingest_iterations_exhausted" in state.errors
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_filter_excludes_non_matching_from_aggregate():
+    """When the finalize agent calls filter_by_prompt with a category-matching prompt,
+    only matching receipts survive to aggregate."""
+    ok_meals = Receipt(
+        id=uuid4(), source_ref="m.png", status="ok",
+        category=AllowedCategory.MEALS, confidence=0.9, notes="x",
+        total=Decimal("25.00"), currency="USD",
+    )
+    ok_travel = Receipt(
+        id=uuid4(), source_ref="t.png", status="ok",
+        category=AllowedCategory.TRAVEL, confidence=0.9, notes="x",
+        total=Decimal("100.00"), currency="USD",
+    )
+    bus = InMemoryEventBus()
+    script = [
+        tool_call("filter_by_prompt", {}),
+        tool_call("aggregate", {}),
+        tool_call("detect_anomalies", {}),
+        tool_call("generate_report", {}),
+        finish(),
+    ]
+    r = GraphRunner(
+        run_id=uuid4(), prompt="only food",
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader([]), ocr=MockOCR(), llm=MockLLM(),
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    state = RunState(receipts=[ok_meals, ok_travel])
+    state = await r.finalize_node(state)
+
+    final_events = [e for e in bus.published if e.get("event_type") == "final_result"]
+    assert len(final_events) == 1
+    final = final_events[0]
+    assert final["total_spend"] == "25.00"
+    receipts_by_ref = {rc["source_ref"]: rc for rc in final["receipts"]}
+    assert receipts_by_ref["m.png"]["status"] == "ok"
+    assert receipts_by_ref["t.png"]["status"] == "filtered"
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_no_filter_when_agent_skips_it():
+    """When the finalize agent doesn't call filter_by_prompt, all OK receipts
+    count toward aggregates as normal — even if the prompt implied filtering."""
+    ok_meals = Receipt(
+        id=uuid4(), source_ref="m.png", status="ok",
+        category=AllowedCategory.MEALS, confidence=0.9, notes="x",
+        total=Decimal("25.00"), currency="USD",
+    )
+    ok_travel = Receipt(
+        id=uuid4(), source_ref="t.png", status="ok",
+        category=AllowedCategory.TRAVEL, confidence=0.9, notes="x",
+        total=Decimal("100.00"), currency="USD",
+    )
+    bus = InMemoryEventBus()
+    script = [
+        tool_call("aggregate", {}),
+        tool_call("detect_anomalies", {}),
+        tool_call("generate_report", {}),
+        finish(),
+    ]
+    r = GraphRunner(
+        run_id=uuid4(), prompt="only food",
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader([]), ocr=MockOCR(), llm=MockLLM(),
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    state = RunState(receipts=[ok_meals, ok_travel])
+    state = await r.finalize_node(state)
+
+    final = [e for e in bus.published if e.get("event_type") == "final_result"][0]
+    assert final["total_spend"] == "125.00"
+    receipts_by_ref = {rc["source_ref"]: rc for rc in final["receipts"]}
+    assert receipts_by_ref["m.png"]["status"] == "ok"
+    assert receipts_by_ref["t.png"]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_full_graph_with_filter_prompt_yields_partial_aggregates():
+    """End-to-end with filter: event ordering + partial totals."""
+    images = [_img("a.png"), _img("b.png")]
+    ocr = MockOCR(responses={
+        "a.png": RawReceipt(source_ref="a.png", vendor="Cafe", receipt_date="2024-03-01",
+                            total_raw="$25.00", ocr_confidence=0.95),
+        "b.png": RawReceipt(source_ref="b.png", vendor="Uber", receipt_date="2024-03-02",
+                            total_raw="$100.00", ocr_confidence=0.95),
+    })
+
+    class _TwoCategoryLLM(MockLLM):
+        async def categorize(self, normalized, allowed, user_prompt):
+            from domain.models import Categorization, AllowedCategory as _AC2
+            if normalized.vendor == "Cafe":
+                return Categorization(category=_AC2.MEALS, confidence=0.9, notes="cafe")
+            return Categorization(category=_AC2.TRAVEL, confidence=0.9, notes="uber")
+
+    llm = _TwoCategoryLLM()
+    script = [
+        tool_call("load_images", {}), finish(),
+        tool_call("extract_receipt_fields", {}),
+        tool_call("normalize_receipt", {}),
+        tool_call("categorize_receipt", {}),
+        finish(),
+        tool_call("extract_receipt_fields", {}),
+        tool_call("normalize_receipt", {}),
+        tool_call("categorize_receipt", {}),
+        finish(),
+        tool_call("filter_by_prompt", {}),
+        tool_call("aggregate", {}),
+        tool_call("detect_anomalies", {}),
+        tool_call("generate_report", {}),
+        finish(),
+    ]
+    bus = InMemoryEventBus()
+    r = GraphRunner(
+        run_id=uuid4(), prompt="only food",
+        bus=bus, tracer=_NullTracer(),
+        image_loader=MockImageLoader(images), ocr=ocr, llm=llm,
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    from application.graph import build_graph
+    graph = build_graph(r)
+    await graph.ainvoke(RunState())
+
+    events = bus.published
+    finalize_start_seq = next(
+        e["seq"] for e in events
+        if e.get("event_type") == "progress" and e.get("step") == "finalize_start"
+    )
+    filter_seq = next(
+        e["seq"] for e in events
+        if e.get("event_type") == "tool_call" and e.get("tool") == "filter_by_prompt"
+    )
+    aggregate_seq = next(
+        e["seq"] for e in events
+        if e.get("event_type") == "tool_call" and e.get("tool") == "aggregate"
+    )
+    assert finalize_start_seq < filter_seq < aggregate_seq
+
+    final = [e for e in events if e.get("event_type") == "final_result"][0]
+    assert final["total_spend"] == "25.00"

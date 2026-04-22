@@ -8,6 +8,7 @@ tool wrapper can classify the error at the boundary.
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import re
+from dateutil.parser import parse as _dateutil_parse, ParserError as _DateutilParserError
 from domain.models import NormalizedReceipt, RawReceipt
 
 
@@ -30,7 +31,14 @@ def parse_date(raw: str | None) -> date | None:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
-    raise ValueError(f"unparseable date: {raw!r}")
+    # Fallback: dateutil handles 2-digit years, abbreviated months, dot
+    # separators, trailing time/AM-PM, and locale quirks like "p. m.".
+    # fuzzy=True tolerates extra characters; we still raise our own
+    # ValueError on genuine noise.
+    try:
+        return _dateutil_parse(text, fuzzy=True).date()
+    except (_DateutilParserError, ValueError, OverflowError, TypeError) as e:
+        raise ValueError(f"unparseable date: {raw!r}") from e
 
 
 def parse_money(raw: str | None) -> tuple[Decimal | None, str | None]:

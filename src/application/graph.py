@@ -399,7 +399,15 @@ class GraphRunner:
                 status="ok",
             )
         else:
-            reason = agent_error or "agent_did_not_finish"
+            # If a tool raised, agent_error is set and carries the real cause
+            # (e.g., "ValueError: unparseable date: '...'"). Otherwise the agent
+            # simply stopped without producing a receipt.
+            if agent_error:
+                reason = agent_error
+                code = "tool_failed"
+            else:
+                reason = "agent_did_not_finish"
+                code = "agent_did_not_finish"
             receipt = Receipt(
                 id=receipt_id,
                 source_ref=image.source_ref,
@@ -407,7 +415,7 @@ class GraphRunner:
                 error=reason,
                 issues=[Issue(
                     severity="receipt_error",
-                    code="agent_did_not_finish",
+                    code=code,
                     message=reason,
                     receipt_id=receipt_id,
                 )],

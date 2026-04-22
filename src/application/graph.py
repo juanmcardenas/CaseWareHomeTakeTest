@@ -96,30 +96,6 @@ def _capture_list(tool, sink: list, item_cls):
     )
 
 
-def _capture_filter(tool, images_sink: list, dropped_sink: list):
-    """Wrap the filter_by_prompt StructuredTool so kept/dropped lists are captured."""
-    from langchain_core.tools import StructuredTool
-
-    original_coro = tool.coroutine
-
-    async def _wrapped(*args, **kwargs):
-        result = await original_coro(*args, **kwargs)
-        # result is a dict: {"kept": [...ImageRef-like...], "dropped": [...tuples/lists...]}
-        images_sink.clear()
-        for d in result["kept"]:
-            images_sink.append(_to_image_ref(d))
-        dropped_sink.clear()
-        for d in result["dropped"]:
-            dropped_sink.append(tuple(d))
-        return result
-
-    return StructuredTool.from_function(
-        coroutine=_wrapped,
-        name=tool.name,
-        description=tool.description,
-        args_schema=tool.args_schema,
-    )
-
 
 def _capture_raw(tool, holder: dict):
     """Capture the RawReceipt output of extract_receipt_fields / re_extract_with_hint."""
@@ -207,6 +183,32 @@ def _capture_aggregates(tool, holder: dict):
     )
 
 
+def _capture_filtered_receipts(tool, receipts_holder: dict):
+    """Wrap filter_by_prompt so its returned list[Receipt] replaces the
+    receipts_holder's receipts. Downstream finalize tools (aggregate,
+    detect_anomalies, generate_report) read from this holder.
+    """
+    from langchain_core.tools import StructuredTool
+    original_coro = tool.coroutine
+
+    async def _wrapped(*args, **kwargs):
+        result = await original_coro(*args, **kwargs)
+        hydrated: list[Receipt] = []
+        if isinstance(result, list):
+            for d in result:
+                if isinstance(d, Receipt):
+                    hydrated.append(d)
+                elif isinstance(d, dict):
+                    hydrated.append(Receipt(**d))
+        receipts_holder["receipts"] = hydrated
+        return result
+
+    return StructuredTool.from_function(
+        coroutine=_wrapped, name=tool.name, description=tool.description,
+        args_schema=tool.args_schema,
+    )
+
+
 class RunState(BaseModel):
     images: list[ImageRef] = Field(default_factory=list)
     filtered_out: list[tuple[str, str]] = Field(default_factory=list)
@@ -268,27 +270,17 @@ class GraphRunner:
 
         # Holders for capturing tool outputs
         images_holder: list[ImageRef] = []
-        dropped_holder: list[tuple[str, str]] = []
 
-        # Construct the two tools
         load_tool = build_load_images_tool(
             ctx_factory=lambda: self._ctx(),
             loader=self.image_loader,
         )
-        filter_tool = build_filter_by_prompt_tool(
-            ctx_factory=lambda: self._ctx(),
-            images_provider=lambda: list(images_holder),
-            user_prompt=self.prompt,
-        )
-
-        # Wrap so their outputs are captured into the holders
         wrapped_load = _capture_list(load_tool, images_holder, ImageRef)
-        wrapped_filter = _capture_filter(filter_tool, images_holder, dropped_holder)
 
         # Build the subgraph agent
         agent = create_agent(
             model=self.chat_model_port.build(),
-            tools=[wrapped_load, wrapped_filter],
+            tools=[wrapped_load],
             system_prompt=INGEST_SYSTEM_PROMPT,
         )
 
@@ -312,7 +304,6 @@ class GraphRunner:
         await self._progress("ingest_done", n=len(images_holder))
         return state.model_copy(update={
             "images": list(images_holder),
-            "filtered_out": list(dropped_holder),
         })
 
     async def per_receipt_node(self, state: RunState) -> RunState:
@@ -477,6 +468,19 @@ class GraphRunner:
 
         await self._progress("finalize_start")
 
+        # Mutable receipts holder: filter_by_prompt (if called) replaces this
+        # with a filtered list. Aggregate/anomalies/report all read from here.
+        receipts_holder: dict = {"receipts": list(state.receipts)}
+
+        filter_tool = _capture_filtered_receipts(
+            build_filter_by_prompt_tool(
+                ctx_factory=lambda: self._ctx(),
+                receipts_provider=lambda: list(receipts_holder["receipts"]),
+                user_prompt=self.prompt,
+            ),
+            receipts_holder,
+        )
+
         aggregates_holder: dict = {}
         report_holder: dict = {}
         assumptions_sink: list[Issue] = []
@@ -484,7 +488,7 @@ class GraphRunner:
         aggregate_tool = _capture_aggregates(
             build_aggregate_tool(
                 ctx_factory=lambda: self._ctx(),
-                receipts_provider=lambda: list(state.receipts),
+                receipts_provider=lambda: list(receipts_holder["receipts"]),
             ),
             aggregates_holder,
         )
@@ -492,7 +496,7 @@ class GraphRunner:
         detect_tool = build_detect_anomalies_tool(
             ctx_factory=lambda: self._ctx(),
             aggregates_holder=aggregates_holder,
-            receipts_provider=lambda: list(state.receipts),
+            receipts_provider=lambda: list(receipts_holder["receipts"]),
         )
 
         add_assumption_tool = build_add_assumption_tool(
@@ -520,7 +524,7 @@ class GraphRunner:
             ctx_factory=lambda: self._ctx(),
             run_id=self.run_id,
             aggregates_holder=aggregates_holder,
-            receipts_provider=lambda: list(state.receipts),
+            receipts_provider=lambda: list(receipts_holder["receipts"]),
             issues_provider=_issues_provider,
             report_holder=report_holder,
             emit_final_result=_emit_final,
@@ -528,7 +532,7 @@ class GraphRunner:
 
         agent = create_agent(
             model=self.chat_model_port.build(),
-            tools=[aggregate_tool, detect_tool, add_assumption_tool, generate_report_tool],
+            tools=[filter_tool, aggregate_tool, detect_tool, add_assumption_tool, generate_report_tool],
             system_prompt=FINALIZE_SYSTEM_PROMPT,
         )
 
@@ -569,17 +573,10 @@ def build_graph(runner: "GraphRunner"):
         # the ErrorEvent and set state.errors; terminate the run here.
         if state.errors:
             return END
-        if len(state.images) == 0 and len(state.filtered_out) == 0:
+        if len(state.images) == 0:
             await runner._emit(ErrorEvent(
                 run_id=runner.run_id, seq=next(runner._seq), ts=_now(),
                 code="no_images", message="no images found in input",
-            ))
-            return END
-        if len(state.images) == 0 and len(state.filtered_out) > 0:
-            await runner._emit(ErrorEvent(
-                run_id=runner.run_id, seq=next(runner._seq), ts=_now(),
-                code="all_images_filtered_out",
-                message=f"all {len(state.filtered_out)} image(s) were filtered out by prompt",
             ))
             return END
         return "per_receipt_node"

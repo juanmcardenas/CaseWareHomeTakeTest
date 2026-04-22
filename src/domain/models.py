@@ -77,7 +77,7 @@ class Receipt(BaseModel):
     issues: list[Issue] = Field(default_factory=list)
     raw_ocr: dict | None = None
     normalized: dict | None = None
-    status: Literal["ok", "error"] = "ok"
+    status: Literal["ok", "error", "filtered"] = "ok"
     error: str | None = None
 
 

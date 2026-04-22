@@ -116,3 +116,10 @@ def test_anomaly_defaults_to_warning_severity():
 def test_anomaly_accepts_notice_severity():
     a = Anomaly(code="currency_mix", message="Multiple currencies present", severity="notice")
     assert a.severity == "notice"
+
+
+def test_receipt_accepts_filtered_status():
+    from uuid import uuid4
+    from domain.models import Receipt
+    r = Receipt(id=uuid4(), source_ref="x.png", status="filtered")
+    assert r.status == "filtered"

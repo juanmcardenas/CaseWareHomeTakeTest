@@ -10,7 +10,6 @@ once on network-class exceptions per plan revision R1.
 """
 from decimal import Decimal
 from uuid import UUID
-from pydantic import BaseModel
 from domain.aggregation import aggregate as _aggregate_pure
 from domain.models import (
     Aggregates, AllowedCategory, Anomaly, Categorization, Issue, NormalizedReceipt,
@@ -120,52 +119,108 @@ async def generate_report(
     )
 
 
-# 7. filter_by_prompt — pure-Python keyword heuristic
-_PROMPT_KEYWORD_MAP: dict[str, list[str]] = {
-    "food": ["restaurant", "cafe", "lunch", "dinner", "meal", "food", "coffee"],
-    "travel": ["uber", "lyft", "taxi", "flight", "hotel", "airbnb", "train"],
-    "office": ["office", "supplies", "staples", "paper"],
-    "software": ["subscription", "saas", "stripe", "github", "aws"],
+_CATEGORY_KEYWORD_MAP: dict[AllowedCategory, list[str]] = {
+    AllowedCategory.MEALS: [
+        "food", "meal", "meals", "restaurant", "cafe", "coffee",
+        "lunch", "dinner", "breakfast", "dining", "entertainment",
+    ],
+    AllowedCategory.TRAVEL: [
+        "travel", "flight", "airfare", "hotel", "airbnb", "lodging",
+        "uber", "lyft", "taxi", "train", "transit", "transport", "transportation",
+    ],
+    AllowedCategory.SOFTWARE: [
+        "software", "subscription", "saas", "app", "license",
+    ],
+    AllowedCategory.PROFESSIONAL: [
+        "professional", "consulting", "consultant", "legal", "accounting", "advisory",
+    ],
+    AllowedCategory.OFFICE_SUPPLIES: [
+        "office", "supplies", "stationery", "paper", "desk",
+    ],
+    AllowedCategory.SHIPPING: [
+        "shipping", "postage", "mail", "delivery", "courier",
+    ],
+    AllowedCategory.UTILITIES: [
+        "utility", "utilities", "electric", "electricity", "water",
+        "gas", "internet",
+    ],
 }
 
-
-class FilterResult(BaseModel):
-    kept: list[ImageRef]
-    dropped: list[tuple[str, str]]
-
-    model_config = {"arbitrary_types_allowed": True}
+_NEGATION_WORDS: tuple[str, ...] = ("exclude", "except", "not ", "no ", "without", "skip")
 
 
-def _matched_keywords(prompt: str) -> list[str]:
-    prompt_lower = prompt.lower()
-    matched: list[str] = []
-    for trigger, keywords in _PROMPT_KEYWORD_MAP.items():
-        if trigger in prompt_lower:
-            matched.extend(keywords)
-    return matched
+def _parse_prompt(prompt: str) -> tuple[set[AllowedCategory], set[AllowedCategory]]:
+    """Return (include, exclude) category sets.
+
+    - No recognised keyword → both sets empty (caller treats as no-op).
+    - Any negation word in prompt → matched categories go to 'exclude'.
+    - Otherwise → matched categories go to 'include'.
+    """
+    text = prompt.lower()
+    is_exclusion = any(neg in text for neg in _NEGATION_WORDS)
+    matched: set[AllowedCategory] = set()
+    for cat, keywords in _CATEGORY_KEYWORD_MAP.items():
+        if any(kw in text for kw in keywords):
+            matched.add(cat)
+    if is_exclusion:
+        return set(), matched
+    return matched, set()
 
 
-@traced_tool(
-    "filter_by_prompt",
-    summarize=lambda r: {"kept": len(r.kept), "dropped": len(r.dropped)},
-)
+# 7. filter_by_prompt — category-based post-categorization filter
+def _summarize_filter_result(receipts: list[Receipt]) -> dict:
+    return {
+        "total": len(receipts),
+        "kept": sum(1 for r in receipts if r.status == "ok"),
+        "filtered": sum(1 for r in receipts if r.status == "filtered"),
+    }
+
+
+@traced_tool("filter_by_prompt", summarize=_summarize_filter_result)
 async def filter_by_prompt(
-    ctx: ToolContext, *, images: list[ImageRef], user_prompt: str | None,
-) -> FilterResult:
+    ctx: ToolContext, *, receipts: list[Receipt], user_prompt: str | None,
+) -> list[Receipt]:
+    """Mark receipts that don't match the prompt as status='filtered'.
+
+    No-op if prompt is empty or maps to no category. Receipts with
+    status='error' are left untouched. Filtered receipts gain an
+    Issue(code='filtered_by_prompt', severity='warning').
+    """
     if not user_prompt:
-        return FilterResult(kept=list(images), dropped=[])
-    keywords = _matched_keywords(user_prompt)
-    if not keywords:
-        return FilterResult(kept=list(images), dropped=[])
-    kept: list[ImageRef] = []
-    dropped: list[tuple[str, str]] = []
-    for img in images:
-        name = img.source_ref.lower()
-        if any(kw in name for kw in keywords):
-            kept.append(img)
+        return list(receipts)
+    include, exclude = _parse_prompt(user_prompt)
+    if not include and not exclude:
+        return list(receipts)
+
+    out: list[Receipt] = []
+    for r in receipts:
+        if r.status != "ok":
+            out.append(r)
+            continue
+        cat = r.category
+        flip = False
+        if include and (cat is None or cat not in include):
+            flip = True
+        elif exclude and cat is not None and cat in exclude:
+            flip = True
+
+        if flip:
+            filt_issue = Issue(
+                severity="warning",
+                code="filtered_by_prompt",
+                message=(
+                    f"filtered out by prompt {user_prompt!r} "
+                    f"(category={cat.value if cat else 'None'})"
+                ),
+                receipt_id=r.id,
+            )
+            out.append(r.model_copy(update={
+                "status": "filtered",
+                "issues": r.issues + [filt_issue],
+            }))
         else:
-            dropped.append((img.source_ref, f"no keyword from prompt ({', '.join(keywords)}) in filename"))
-    return FilterResult(kept=kept, dropped=dropped)
+            out.append(r)
+    return out
 
 
 # 8. re_extract_with_hint — retries OCR with a caller-supplied hint

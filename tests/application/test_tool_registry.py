@@ -117,34 +117,123 @@ async def test_generate_report_bundles_fields():
 # ---------------------------------------------------------------------------
 # filter_by_prompt tests
 # ---------------------------------------------------------------------------
-from application.tool_registry import filter_by_prompt, FilterResult
+from uuid import uuid4 as _uuid4_filter
+from decimal import Decimal as _Decimal_filter
+from domain.models import AllowedCategory as _AC
+from domain.models import Receipt as _Receipt_filter, Issue as _Issue_filter
+from application.tool_registry import filter_by_prompt as _filter_by_prompt
+
+
+def _ok_receipt(category: _AC, total: str = "10.00", source_ref: str = "x") -> _Receipt_filter:
+    return _Receipt_filter(
+        id=_uuid4_filter(), source_ref=source_ref, status="ok",
+        category=category, confidence=0.9, notes="n",
+        total=_Decimal_filter(total), currency="USD",
+    )
+
+
+def _error_receipt(source_ref: str = "y") -> _Receipt_filter:
+    return _Receipt_filter(id=_uuid4_filter(), source_ref=source_ref, status="error", error="boom")
 
 
 @pytest.mark.asyncio
-async def test_filter_by_prompt_no_prompt_keeps_all():
-    imgs = [_img("a.png"), _img("b.png")]
-    r = await filter_by_prompt(_fctx(), images=imgs, user_prompt=None)
-    assert r.kept == imgs
-    assert r.dropped == []
+async def test_filter_by_prompt_no_prompt_is_noop():
+    receipts = [_ok_receipt(_AC.MEALS), _ok_receipt(_AC.TRAVEL)]
+    out = await _filter_by_prompt(_fctx(), receipts=receipts, user_prompt=None)
+    assert all(r.status == "ok" for r in out)
+    assert len(out) == 2
 
 
 @pytest.mark.asyncio
-async def test_filter_by_prompt_unknown_keyword_keeps_all():
-    imgs = [_img("a.png"), _img("b.png")]
-    r = await filter_by_prompt(_fctx(), images=imgs, user_prompt="arbitrary freeform text")
-    assert r.kept == imgs
-    assert r.dropped == []
+async def test_filter_by_prompt_unknown_keyword_is_noop():
+    receipts = [_ok_receipt(_AC.MEALS), _ok_receipt(_AC.TRAVEL)]
+    out = await _filter_by_prompt(_fctx(), receipts=receipts, user_prompt="arbitrary freeform text")
+    assert all(r.status == "ok" for r in out)
 
 
 @pytest.mark.asyncio
-async def test_filter_by_prompt_food_keyword_matches_restaurant_filename():
-    imgs = [_img("restaurant_001.png"), _img("uber_receipt.png"), _img("cafe_drink.png")]
-    r = await filter_by_prompt(_fctx(), images=imgs, user_prompt="only food")
-    kept_names = {i.source_ref for i in r.kept}
-    assert kept_names == {"restaurant_001.png", "cafe_drink.png"}
-    assert len(r.dropped) == 1
-    assert r.dropped[0][0] == "uber_receipt.png"
-    assert "food" in r.dropped[0][1].lower() or "keyword" in r.dropped[0][1].lower()
+async def test_filter_by_prompt_include_keeps_matching_category():
+    meals = _ok_receipt(_AC.MEALS, source_ref="m")
+    travel = _ok_receipt(_AC.TRAVEL, source_ref="t")
+    out = await _filter_by_prompt(_fctx(), receipts=[meals, travel], user_prompt="only food")
+    out_by_ref = {r.source_ref: r for r in out}
+    assert out_by_ref["m"].status == "ok"
+    assert out_by_ref["t"].status == "filtered"
+
+
+@pytest.mark.asyncio
+async def test_filter_by_prompt_exclude_drops_matching_category():
+    meals = _ok_receipt(_AC.MEALS, source_ref="m")
+    travel = _ok_receipt(_AC.TRAVEL, source_ref="t")
+    out = await _filter_by_prompt(_fctx(), receipts=[meals, travel], user_prompt="exclude travel")
+    out_by_ref = {r.source_ref: r for r in out}
+    assert out_by_ref["m"].status == "ok"
+    assert out_by_ref["t"].status == "filtered"
+
+
+@pytest.mark.asyncio
+async def test_filter_by_prompt_leaves_errored_receipts_alone():
+    errored = _error_receipt(source_ref="e")
+    ok = _ok_receipt(_AC.TRAVEL, source_ref="o")
+    out = await _filter_by_prompt(_fctx(), receipts=[errored, ok], user_prompt="only food")
+    out_by_ref = {r.source_ref: r for r in out}
+    assert out_by_ref["e"].status == "error"
+    assert out_by_ref["o"].status == "filtered"
+
+
+@pytest.mark.asyncio
+async def test_filter_by_prompt_multi_category_include():
+    meals = _ok_receipt(_AC.MEALS, source_ref="m")
+    office = _ok_receipt(_AC.OFFICE_SUPPLIES, source_ref="o")
+    travel = _ok_receipt(_AC.TRAVEL, source_ref="t")
+    out = await _filter_by_prompt(
+        _fctx(), receipts=[meals, office, travel],
+        user_prompt="food and office supplies",
+    )
+    out_by_ref = {r.source_ref: r for r in out}
+    assert out_by_ref["m"].status == "ok"
+    assert out_by_ref["o"].status == "ok"
+    assert out_by_ref["t"].status == "filtered"
+
+
+@pytest.mark.asyncio
+async def test_filter_by_prompt_multi_category_exclude():
+    meals = _ok_receipt(_AC.MEALS, source_ref="m")
+    travel = _ok_receipt(_AC.TRAVEL, source_ref="t")
+    software = _ok_receipt(_AC.SOFTWARE, source_ref="s")
+    office = _ok_receipt(_AC.OFFICE_SUPPLIES, source_ref="o")
+    out = await _filter_by_prompt(
+        _fctx(), receipts=[meals, travel, software, office],
+        user_prompt="exclude travel and software",
+    )
+    out_by_ref = {r.source_ref: r for r in out}
+    assert out_by_ref["m"].status == "ok"
+    assert out_by_ref["t"].status == "filtered"
+    assert out_by_ref["s"].status == "filtered"
+    assert out_by_ref["o"].status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_filter_by_prompt_filtered_receipts_have_issue():
+    travel = _ok_receipt(_AC.TRAVEL, source_ref="t")
+    out = await _filter_by_prompt(_fctx(), receipts=[travel], user_prompt="only food")
+    assert out[0].status == "filtered"
+    codes = [iss.code for iss in out[0].issues]
+    assert "filtered_by_prompt" in codes
+    filt_issue = next(iss for iss in out[0].issues if iss.code == "filtered_by_prompt")
+    assert filt_issue.severity == "warning"
+    assert "only food" in filt_issue.message
+    assert "Travel" in filt_issue.message
+
+
+@pytest.mark.asyncio
+async def test_filter_by_prompt_returns_all_filtered_when_nothing_matches():
+    meals = _ok_receipt(_AC.MEALS, source_ref="m")
+    travel = _ok_receipt(_AC.TRAVEL, source_ref="t")
+    out = await _filter_by_prompt(
+        _fctx(), receipts=[meals, travel], user_prompt="only utilities",
+    )
+    assert all(r.status == "filtered" for r in out)
 
 
 # ---------------------------------------------------------------------------
@@ -291,3 +380,49 @@ async def test_build_load_images_tool_returns_base_tool_usable_by_agent():
     result = await tool.ainvoke({})
     assert isinstance(result, list)
     assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# _parse_prompt tests
+# ---------------------------------------------------------------------------
+from application.tool_registry import _parse_prompt
+
+
+@pytest.mark.parametrize("prompt,expected_exclude", [
+    ("exclude travel", {_AC.TRAVEL}),
+    ("except food", {_AC.MEALS}),
+    ("not office", {_AC.OFFICE_SUPPLIES}),
+    ("no travel please", {_AC.TRAVEL}),
+    ("without software", {_AC.SOFTWARE}),
+    ("skip utilities", {_AC.UTILITIES}),
+])
+def test_parse_prompt_detects_exclusion_on_each_negation_word(prompt, expected_exclude):
+    include, exclude = _parse_prompt(prompt)
+    assert include == set()
+    assert exclude == expected_exclude
+
+
+def test_parse_prompt_include_is_default_when_no_negation():
+    include, exclude = _parse_prompt("only food")
+    assert exclude == set()
+    assert include == {_AC.MEALS}
+
+
+def test_parse_prompt_multiple_categories():
+    include, exclude = _parse_prompt("food and office supplies please")
+    assert exclude == set()
+    assert include == {_AC.MEALS, _AC.OFFICE_SUPPLIES}
+
+
+@pytest.mark.parametrize("prompt", [
+    "notable meals",         # "not" was previously a bare substring
+    "I want a note of food",
+    "snotty review of restaurants",
+])
+def test_parse_prompt_does_not_treat_words_containing_not_as_negation(prompt):
+    """Regression: before the `"not "` fix, prompts containing 'not' as a
+    substring (notable, note, snotty) were parsed as exclusions and flipped
+    user intent."""
+    include, exclude = _parse_prompt(prompt)
+    assert exclude == set(), f"'{prompt}' should not be treated as an exclusion"
+    assert include == {_AC.MEALS}

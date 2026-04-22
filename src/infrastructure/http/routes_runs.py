@@ -17,6 +17,7 @@ from application.ports import ChatModelPort, ReportRepositoryPort, TraceReposito
 from config import LLMMode, Settings
 from infrastructure.http.sse import sse_response
 from infrastructure.images.folder_loader import LocalFolderImageLoader
+from infrastructure.images.list_path_loader import ListPathImageLoader, TooManyPathsError
 from infrastructure.images.upload_loader import UploadImageLoader
 from infrastructure.ocr.mock_adapter import MockOCRAdapter
 from infrastructure.llm.mock_adapter import MockLLMAdapter
@@ -35,6 +36,11 @@ class RunsDeps:
 
 class FolderInput(BaseModel):
     folder_path: str
+    prompt: str | None = None
+
+
+class PathsInput(BaseModel):
+    image_paths: list[str]
     prompt: str | None = None
 
 
@@ -65,18 +71,49 @@ async def post_runs_stream(request: Request):
         )
         input_kind, input_ref = "upload", f"{len(files)} files"
     else:
-        body = await request.json()
         try:
-            fi = FolderInput(**body)
+            body = await request.json()
         except Exception as e:
-            raise HTTPException(422, f"invalid body: {e}")
-        folder = Path(fi.folder_path).resolve()
-        assets = settings.assets_dir.resolve()
-        if not str(folder).startswith(str(assets)):
-            raise HTTPException(400, f"folder_path must be under {assets}")
-        image_loader = LocalFolderImageLoader(folder, settings.allowed_extensions)
-        input_kind, input_ref = "folder", str(folder)
-        prompt = fi.prompt
+            raise HTTPException(422, f"invalid JSON body: {e}")
+        if not isinstance(body, dict):
+            raise HTTPException(422, "body must be a JSON object")
+        has_folder = "folder_path" in body
+        has_paths = "image_paths" in body
+        if has_folder and has_paths:
+            raise HTTPException(422, "provide exactly one of folder_path or image_paths")
+        if not has_folder and not has_paths:
+            raise HTTPException(422, "body must include folder_path or image_paths")
+
+        if has_paths:
+            try:
+                pi = PathsInput(**body)
+            except Exception as e:
+                raise HTTPException(422, f"invalid body: {e}")
+            try:
+                image_loader = ListPathImageLoader(
+                    pi.image_paths,
+                    settings.allowed_extensions,
+                    settings.assets_dir,
+                    max_files_per_run=settings.max_files_per_run,
+                )
+            except TooManyPathsError as e:
+                raise HTTPException(413, str(e))
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            input_kind, input_ref = "paths", f"{len(pi.image_paths)} paths"
+            prompt = pi.prompt
+        else:
+            try:
+                fi = FolderInput(**body)
+            except Exception as e:
+                raise HTTPException(422, f"invalid body: {e}")
+            folder = Path(fi.folder_path).resolve()
+            assets = settings.assets_dir.resolve()
+            if not folder.is_relative_to(assets):
+                raise HTTPException(400, f"folder_path must be under {assets}")
+            image_loader = LocalFolderImageLoader(folder, settings.allowed_extensions)
+            input_kind, input_ref = "folder", str(folder)
+            prompt = fi.prompt
 
     run_id = uuid4()
     bus = InMemoryEventBus()

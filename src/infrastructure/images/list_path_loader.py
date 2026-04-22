@@ -32,7 +32,7 @@ class ListPathImageLoader(ImageLoaderPort):
         refs: list[ImageRef] = []
         for original in paths:
             p = Path(original).resolve()
-            if not str(p).startswith(str(assets_resolved)):
+            if not p.is_relative_to(assets_resolved):
                 bad.append((original, f"path must be under {assets_resolved}"))
                 continue
             if not p.exists():

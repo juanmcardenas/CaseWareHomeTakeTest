@@ -98,3 +98,25 @@ def test_aggregates_all_failures(tmp_path):
     assert "ghost.png" in msg
     assert "script.exe" in msg
     assert msg.count("\n") >= 3  # header line + 3 reason lines
+
+
+def test_max_files_per_run_enforced(tmp_path):
+    assets = _make_assets(tmp_path)
+    # Create more valid images than the limit
+    for i in range(5):
+        (assets / f"extra_{i}.png").write_bytes(b"\x89PNG")
+    paths = [str(p) for p in assets.iterdir() if p.suffix == ".png"]
+    assert len(paths) >= 3, "precondition: need at least 3 png files"
+    with pytest.raises(TooManyPathsError, match="too many paths"):
+        ListPathImageLoader(paths, ALLOWED, assets, max_files_per_run=2)
+
+
+def test_max_files_per_run_default_is_unlimited(tmp_path):
+    """When max_files_per_run is None (default), any count is accepted."""
+    assets = _make_assets(tmp_path)
+    for i in range(5):
+        (assets / f"extra_{i}.png").write_bytes(b"\x89PNG")
+    paths = [str(p) for p in assets.iterdir() if p.suffix == ".png"]
+    loader = ListPathImageLoader(paths, ALLOWED, assets)  # no max
+    # Should not raise
+    assert loader is not None

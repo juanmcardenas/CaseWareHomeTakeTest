@@ -21,6 +21,7 @@ class ListPathImageLoader(ImageLoaderPort):
         paths: list[str],
         allowed_extensions: set[str],
         assets_dir: Path,
+        max_files_per_run: int | None = None,
     ) -> None:
         if len(paths) == 0:
             raise ValueError("image_paths must not be empty")
@@ -53,6 +54,11 @@ class ListPathImageLoader(ImageLoaderPort):
         if bad:
             lines = [f"  {orig}: {why}" for orig, why in bad]
             raise ValueError("invalid image_paths:\n" + "\n".join(lines))
+
+        if max_files_per_run is not None and len(refs) > max_files_per_run:
+            raise TooManyPathsError(
+                f"too many paths (max {max_files_per_run}, got {len(refs)})"
+            )
 
         self._refs = refs
 

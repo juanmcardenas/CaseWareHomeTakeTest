@@ -116,3 +116,28 @@ def test_image_paths_neither_folder_nor_paths_returns_422(client1):
     c, *_ = client1
     r = c.post("/runs/stream", json={"prompt": "just a prompt"})
     assert r.status_code == 422
+
+
+def test_image_paths_empty_list_returns_400(client1):
+    """Empty image_paths array returns 400 before streaming."""
+    c, *_ = client1
+    r = c.post("/runs/stream", json={"image_paths": []})
+    assert r.status_code == 400
+    assert "must not be empty" in r.text
+
+
+def test_non_object_body_returns_422(client1):
+    """Non-dict JSON bodies (integer, string, array) are rejected with 422."""
+    c, *_ = client1
+    for body in [42, "hello", [1, 2, 3]]:
+        r = c.post("/runs/stream", json=body)
+        assert r.status_code == 422, f"body={body!r} got {r.status_code}"
+
+
+def test_folder_path_adjacent_prefix_returns_400(client1, tmp_path):
+    """A folder_path that shares the assets_dir prefix but isn't under it is rejected."""
+    c, *_ = client1
+    # ASSETS_DIR fixture is ./tests/fixtures/folder — try an adjacent path
+    r = c.post("/runs/stream", json={"folder_path": "./tests/fixtures/folder_evil"})
+    assert r.status_code == 400
+    assert "must be under" in r.text

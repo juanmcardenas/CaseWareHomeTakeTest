@@ -71,7 +71,12 @@ async def post_runs_stream(request: Request):
         )
         input_kind, input_ref = "upload", f"{len(files)} files"
     else:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception as e:
+            raise HTTPException(422, f"invalid JSON body: {e}")
+        if not isinstance(body, dict):
+            raise HTTPException(422, "body must be a JSON object")
         has_folder = "folder_path" in body
         has_paths = "image_paths" in body
         if has_folder and has_paths:
@@ -104,7 +109,7 @@ async def post_runs_stream(request: Request):
                 raise HTTPException(422, f"invalid body: {e}")
             folder = Path(fi.folder_path).resolve()
             assets = settings.assets_dir.resolve()
-            if not str(folder).startswith(str(assets)):
+            if not folder.is_relative_to(assets):
                 raise HTTPException(400, f"folder_path must be under {assets}")
             image_loader = LocalFolderImageLoader(folder, settings.allowed_extensions)
             input_kind, input_ref = "folder", str(folder)

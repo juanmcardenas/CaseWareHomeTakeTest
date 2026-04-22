@@ -37,9 +37,12 @@ FINALIZE_SYSTEM_PROMPT = """\
 You are the finalize agent. Produce the final report.
 
 Required sequence:
-1. If the user prompt implies category filtering (for example "only food",
-   "exclude travel", "no software"), call `filter_by_prompt` first.
-   Otherwise skip to step 2.
+1. If the user supplied any prompt that names an expense category
+   (for example "only food", "include office supplies", "focus on
+   restaurants", "exclude travel", "no software"), call
+   `filter_by_prompt` first. Only skip step 1 if there is no prompt
+   or the prompt is clearly generic guidance that does NOT mention
+   any category.
 2. Call `aggregate` on the (possibly filtered) receipts.
 3. Call `detect_anomalies` on the aggregates and receipts.
 4. For EACH anomaly returned by `detect_anomalies`, call `add_assumption`

@@ -16,7 +16,7 @@ from pydantic import BaseModel as _BM, Field as _F
 from application.ports import ImageLoaderPort, ImageRef, LLMPort, OCRPort
 from application.traced_tool import ToolContext
 from application.tool_registry import (
-    load_images, filter_by_prompt, extract_receipt_fields,
+    load_images, extract_receipt_fields,
     re_extract_with_hint, normalize_receipt, categorize_receipt,
     skip_receipt, aggregate_receipts, detect_anomalies,
     add_assumption, generate_report,
@@ -48,24 +48,6 @@ def build_load_images_tool(*, ctx_factory: Callable[[], ToolContext], loader: Im
         coroutine=_run,
         name="load_images",
         description="Load all receipt images available for this run. Takes no arguments.",
-    )
-
-
-def build_filter_by_prompt_tool(
-    *, ctx_factory: Callable[[], ToolContext],
-    receipts_provider: Callable[[], list[Receipt]],
-    user_prompt: str | None,
-) -> StructuredTool:
-    async def _run() -> list[dict]:
-        result = await filter_by_prompt(
-            ctx_factory(), receipts=receipts_provider(), user_prompt=user_prompt,
-        )
-        return _dump(result)
-
-    return StructuredTool.from_function(
-        coroutine=_run,
-        name="filter_by_prompt",
-        description="Mark receipts that don't match the user's prompt as status='filtered'. Takes no arguments; uses the processed receipts and the run's user_prompt.",
     )
 
 
@@ -121,14 +103,14 @@ def build_normalize_receipt_tool(
 
 def build_categorize_receipt_tool(
     *, ctx_factory: Callable[[], ToolContext], llm: LLMPort,
-    normalized_holder: dict, user_prompt: str | None,
+    normalized_holder: dict,
 ) -> StructuredTool:
     async def _run() -> dict:
         normalized = normalized_holder.get("normalized")
         if normalized is None:
             raise RuntimeError("categorize_receipt called before normalize_receipt")
         result = await categorize_receipt(
-            ctx_factory(), llm=llm, normalized=normalized, user_prompt=user_prompt,
+            ctx_factory(), llm=llm, normalized=normalized,
         )
         return _dump(result)
 

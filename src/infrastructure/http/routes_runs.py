@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import AsyncIterator
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from starlette.datastructures import UploadFile
 
 from application.event_bus import InMemoryEventBus
 from application.graph import GraphRunner, RunState, build_graph
@@ -38,15 +39,24 @@ class FolderInput(BaseModel):
 
 
 @router.post("/runs/stream")
-async def post_runs_stream(request: Request,
-                           files: list[UploadFile] = File(default=None),
-                           prompt: str | None = Form(default=None)):
+async def post_runs_stream(request: Request):
     deps: RunsDeps = request.app.state.runs_deps
     settings = deps.settings
 
-    # Decide input mode
+    # Branch on Content-Type before reading the body. Using FastAPI's
+    # File/Form deps here would eagerly consume the stream as multipart
+    # even for JSON requests, breaking a later request.json() call.
+    content_type = request.headers.get("content-type", "").lower()
+    prompt: str | None = None
     image_loader = None
-    if files:
+
+    if content_type.startswith("multipart/"):
+        form = await request.form()
+        files: list[UploadFile] = [v for v in form.getlist("files") if isinstance(v, UploadFile)]
+        prompt_val = form.get("prompt")
+        prompt = prompt_val if isinstance(prompt_val, str) else None
+        if not files:
+            raise HTTPException(422, "multipart request requires at least one 'files' field")
         if len(files) > settings.max_files_per_run:
             raise HTTPException(413, f"too many files (max {settings.max_files_per_run})")
         image_loader = UploadImageLoader(

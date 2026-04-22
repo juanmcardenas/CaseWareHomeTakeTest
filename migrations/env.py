@@ -8,7 +8,7 @@ config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
 
-db_url = os.environ["SUPABASE_DB_URL"].replace("+psycopg", "")  # sync driver for Alembic
+db_url = os.environ["SUPABASE_DB_URL"]  # psycopg v3 supports sync + async; keep +psycopg
 config.set_main_option("sqlalchemy.url", db_url)
 
 target_metadata = Base.metadata

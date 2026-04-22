@@ -104,3 +104,30 @@ def test_parse_date_mdy_precedence_is_documented():
     assert parse_date("03/04/2024") == date(2024, 3, 4)
     # 13/04/2024 → MDY fails (month 13 invalid), falls through to DMY
     assert parse_date("13/04/2024") == date(2024, 4, 13)
+
+
+# Formats that failed in real OCR output before the dateutil fallback was added.
+# Each tuple is (raw_input, expected_date).
+@pytest.mark.parametrize("raw,expected", [
+    ("30.07.2007 13:29:17", date(2007, 7, 30)),      # European dots + trailing time
+    ("07/28/17", date(2017, 7, 28)),                 # US, 2-digit year
+    ("May 22, 2024  11:24 AM", date(2024, 5, 22)),   # long month + time
+    ("19-05-24", date(2024, 5, 19)),                 # Argentine DD-MM-YY via dayfirst heuristic
+    ("MAY 14 '24 10:32 AM", date(2024, 5, 14)),      # uppercase month + apostrophe year + time
+    ("05/12/24", date(2024, 5, 12)),                 # US, 2-digit year (MDY bias)
+    ("14/02/2026 1:05:31 p. m.", date(2026, 2, 14)), # Spanish p.m. suffix
+    ("Aug 30, 2022", date(2022, 8, 30)),             # abbreviated month
+    ("24/04/2024", date(2024, 4, 24)),               # Netflix MX (DD/MM/YYYY unambiguous)
+])
+def test_parse_date_handles_real_world_formats(raw, expected):
+    """Regression test for formats that appeared in actual OCR output but
+    previously raised ValueError because they weren't in _DATE_FORMATS."""
+    assert parse_date(raw) == expected
+
+
+def test_parse_date_garbage_still_raises():
+    """Genuine OCR garbage must still fail — the fallback shouldn't be overly lenient."""
+    with pytest.raises(ValueError, match="unparseable date"):
+        parse_date("20.5 10 02 18 24:02 05 00")
+    with pytest.raises(ValueError):
+        parse_date("not a date")

@@ -140,6 +140,39 @@ async def test_per_receipt_node_agent_finishes_early_produces_error_receipt():
 
 
 @pytest.mark.asyncio
+async def test_per_receipt_node_tool_error_is_labeled_tool_failed():
+    """When a tool raises inside the agent's loop and the agent gives up,
+    the synthesized error receipt should carry the actual tool error —
+    not the generic 'agent_did_not_finish' label."""
+    images = [_img("a.png")]
+    # OCR succeeds, normalize will fail on genuinely unparseable date garbage
+    ocr = MockOCR(responses={"a.png": RawReceipt(
+        source_ref="a.png", vendor="Acme",
+        receipt_date="20.5 10 02 18 24:02 05 00",  # OCR noise, unparseable
+        total_raw="$10", ocr_confidence=0.9,
+    )})
+    script = [
+        tool_call("extract_receipt_fields", {}),
+        tool_call("normalize_receipt", {}),  # will raise ValueError
+        finish(),  # agent gives up after seeing the error
+    ]
+    r = GraphRunner(
+        run_id=uuid4(), prompt=None,
+        bus=InMemoryEventBus(), tracer=_NullTracer(),
+        image_loader=MockImageLoader(images), ocr=ocr, llm=MockLLM(),
+        chat_model_port=FakeChatModelAdapter(script),
+        report_repo=InMemoryReportRepository(),
+    )
+    state = RunState(images=images, current=0)
+    state = await r.per_receipt_node(state)
+    receipt = state.receipts[0]
+    assert receipt.status == "error"
+    # The actual tool error should surface, not agent_did_not_finish
+    assert "unparseable date" in (receipt.error or ""), f"got: {receipt.error}"
+    assert receipt.issues[0].code == "tool_failed", f"got: {receipt.issues[0].code}"
+
+
+@pytest.mark.asyncio
 async def test_finalize_node_all_receipts_errored_emits_run_level_error():
     bus = InMemoryEventBus()
     r = GraphRunner(

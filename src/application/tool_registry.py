@@ -119,7 +119,6 @@ async def generate_report(
     )
 
 
-# 7. filter_by_prompt — category-based post-categorization filter (implemented in Task 2.1)
 _CATEGORY_KEYWORD_MAP: dict[AllowedCategory, list[str]] = {
     AllowedCategory.MEALS: [
         "food", "meal", "meals", "restaurant", "cafe", "coffee",
@@ -168,12 +167,60 @@ def _parse_prompt(prompt: str) -> tuple[set[AllowedCategory], set[AllowedCategor
     return matched, set()
 
 
-async def filter_by_prompt(ctx: ToolContext, **kwargs):
-    """Stub — rewritten in Task 2.1 with a new signature.
+# 7. filter_by_prompt — category-based post-categorization filter
+def _summarize_filter_result(receipts: list[Receipt]) -> dict:
+    return {
+        "total": len(receipts),
+        "kept": sum(1 for r in receipts if r.status == "ok"),
+        "filtered": sum(1 for r in receipts if r.status == "filtered"),
+    }
 
-    Kept here so imports of `filter_by_prompt` don't break in the transition.
+
+@traced_tool("filter_by_prompt", summarize=_summarize_filter_result)
+async def filter_by_prompt(
+    ctx: ToolContext, *, receipts: list[Receipt], user_prompt: str | None,
+) -> list[Receipt]:
+    """Mark receipts that don't match the prompt as status='filtered'.
+
+    No-op if prompt is empty or maps to no category. Receipts with
+    status='error' are left untouched. Filtered receipts gain an
+    Issue(code='filtered_by_prompt', severity='warning').
     """
-    raise NotImplementedError("filter_by_prompt is being rewritten; see Task 2.1")
+    if not user_prompt:
+        return list(receipts)
+    include, exclude = _parse_prompt(user_prompt)
+    if not include and not exclude:
+        return list(receipts)
+
+    out: list[Receipt] = []
+    for r in receipts:
+        if r.status != "ok":
+            out.append(r)
+            continue
+        cat = r.category
+        flip = False
+        if include and (cat is None or cat not in include):
+            flip = True
+        elif exclude and cat is not None and cat in exclude:
+            flip = True
+
+        if flip:
+            filt_issue = Issue(
+                severity="warning",
+                code="filtered_by_prompt",
+                message=(
+                    f"filtered out by prompt {user_prompt!r} "
+                    f"(category={cat.value if cat else 'None'})"
+                ),
+                receipt_id=r.id,
+            )
+            out.append(r.model_copy(update={
+                "status": "filtered",
+                "issues": r.issues + [filt_issue],
+            }))
+        else:
+            out.append(r)
+    return out
 
 
 # 8. re_extract_with_hint — retries OCR with a caller-supplied hint

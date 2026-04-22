@@ -53,17 +53,19 @@ def build_load_images_tool(*, ctx_factory: Callable[[], ToolContext], loader: Im
 
 def build_filter_by_prompt_tool(
     *, ctx_factory: Callable[[], ToolContext],
-    images_provider: Callable[[], list[ImageRef]],
+    receipts_provider: Callable[[], list[Receipt]],
     user_prompt: str | None,
 ) -> StructuredTool:
-    async def _run() -> dict:
-        result = await filter_by_prompt(ctx_factory(), images=images_provider(), user_prompt=user_prompt)
+    async def _run() -> list[dict]:
+        result = await filter_by_prompt(
+            ctx_factory(), receipts=receipts_provider(), user_prompt=user_prompt,
+        )
         return _dump(result)
 
     return StructuredTool.from_function(
         coroutine=_run,
         name="filter_by_prompt",
-        description="Filter the loaded images based on the user's prompt. Takes no arguments; uses images loaded by load_images and the run's user_prompt.",
+        description="Mark receipts that don't match the user's prompt as status='filtered'. Takes no arguments; uses the processed receipts and the run's user_prompt.",
     )
 
 
